@@ -163,6 +163,10 @@ enum Commands {
         /// force non-fast-forward update
         #[arg(short, long)]
         force: bool,
+
+        /// dry run - show what would be transferred without doing it
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// pull a ref from another repository
@@ -176,6 +180,10 @@ enum Commands {
         /// only fetch objects, don't update ref
         #[arg(long)]
         fetch_only: bool,
+
+        /// dry run - show what would be transferred without doing it
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// list refs
@@ -395,42 +403,54 @@ fn run(cli: Cli) -> zub::Result<()> {
             destination,
             ref_name,
             force,
+            dry_run,
         } => {
             let src = Repo::open(&cli.repo)?;
             let dst = Repo::open(&destination)?;
 
-            let options = PushOptions { force };
+            let options = PushOptions { force, dry_run };
             let result = push_local(&src, &dst, &ref_name, &options)?;
 
-            println!("pushed {} to {}", result.hash, destination.display());
-            println!(
-                "transferred: {} copied, {} hardlinked, {} skipped, {} bytes",
-                result.stats.copied,
-                result.stats.hardlinked,
-                result.stats.skipped,
-                result.stats.bytes_transferred
-            );
+            if dry_run {
+                println!("would push {} to {}", result.hash, destination.display());
+                println!("would transfer {} objects", result.objects_to_transfer);
+            } else {
+                println!("pushed {} to {}", result.hash, destination.display());
+                println!(
+                    "transferred: {} copied, {} hardlinked, {} skipped, {} bytes",
+                    result.stats.copied,
+                    result.stats.hardlinked,
+                    result.stats.skipped,
+                    result.stats.bytes_transferred
+                );
+            }
         }
 
         Commands::Pull {
             source,
             ref_name,
             fetch_only,
+            dry_run,
         } => {
             let src = Repo::open(&source)?;
             let dst = Repo::open(&cli.repo)?;
 
-            let options = PullOptions { fetch_only };
+            let options = PullOptions { fetch_only, dry_run };
             let result = pull_local(&src, &dst, &ref_name, &options)?;
 
-            println!("pulled {} from {}", result.hash, source.display());
-            println!(
-                "transferred: {} copied, {} hardlinked, {} skipped, {} bytes",
-                result.stats.copied,
-                result.stats.hardlinked,
-                result.stats.skipped,
-                result.stats.bytes_transferred
-            );
+            if dry_run {
+                println!("would pull {} from {}", result.hash, source.display());
+                println!("would transfer {} objects", result.objects_to_transfer);
+            } else {
+                println!("pulled {} from {}", result.hash, source.display());
+                println!(
+                    "transferred: {} copied, {} hardlinked, {} skipped, {} bytes",
+                    result.stats.copied,
+                    result.stats.hardlinked,
+                    result.stats.skipped,
+                    result.stats.bytes_transferred
+                );
+            }
         }
 
         Commands::Refs => {

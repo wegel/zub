@@ -18,6 +18,8 @@ use crate::types::EntryKind;
 pub struct PullOptions {
     /// only fetch objects, don't update ref
     pub fetch_only: bool,
+    /// dry run - show what would be transferred without doing it
+    pub dry_run: bool,
 }
 
 /// pull a ref from a local repository
@@ -43,6 +45,15 @@ pub fn pull_local(
     needed.trees.retain(|h| !existing_trees.contains(h));
     needed.commits.retain(|h| !existing_commits.contains(h));
 
+    // dry run: return what would be transferred without doing anything
+    if options.dry_run {
+        return Ok(PullResult {
+            hash: src_hash,
+            stats: TransferStats::default(),
+            objects_to_transfer: needed.blobs.len() + needed.trees.len() + needed.commits.len(),
+        });
+    }
+
     // copy needed objects
     let stats = copy_objects(src, dst, &needed)?;
 
@@ -54,6 +65,7 @@ pub fn pull_local(
     Ok(PullResult {
         hash: src_hash,
         stats,
+        objects_to_transfer: 0,
     })
 }
 
@@ -77,6 +89,16 @@ pub fn pull_ssh(
 
     // ask remote what we need
     let needed = conn.have_objects(&existing)?;
+
+    // dry run: return what would be transferred without doing anything
+    if options.dry_run {
+        conn.close()?;
+        return Ok(PullResult {
+            hash: remote_hash,
+            stats: TransferStats::default(),
+            objects_to_transfer: needed.blobs.len() + needed.trees.len() + needed.commits.len(),
+        });
+    }
 
     // receive objects
     let mut stats = TransferStats::default();
@@ -111,6 +133,7 @@ pub fn pull_ssh(
     Ok(PullResult {
         hash: remote_hash,
         stats,
+        objects_to_transfer: 0,
     })
 }
 
@@ -191,6 +214,8 @@ fn object_path(base: &Path, hash: &Hash) -> std::path::PathBuf {
 pub struct PullResult {
     pub hash: Hash,
     pub stats: TransferStats,
+    /// number of objects that would be transferred (for dry run)
+    pub objects_to_transfer: usize,
 }
 
 #[cfg(test)]
@@ -239,7 +264,7 @@ mod tests {
         fs::write(source.join("file.txt"), "content").unwrap();
         let hash = commit(&src, &source, "test", Some("initial"), None).unwrap();
 
-        let options = PullOptions { fetch_only: true };
+        let options = PullOptions { fetch_only: true, dry_run: false };
         let result = pull_local(&src, &dst, "test", &options).unwrap();
 
         assert_eq!(result.hash, hash);

@@ -18,6 +18,8 @@ use crate::types::EntryKind;
 pub struct PushOptions {
     /// force update even if not fast-forward
     pub force: bool,
+    /// dry run - show what would be transferred without doing it
+    pub dry_run: bool,
 }
 
 /// push a ref to a local repository
@@ -55,6 +57,20 @@ pub fn push_local(
     needed.trees.retain(|h| !existing_trees.contains(h));
     needed.commits.retain(|h| !existing_commits.contains(h));
 
+    // dry run: return what would be transferred without doing anything
+    if options.dry_run {
+        return Ok(PushResult {
+            hash: src_hash,
+            stats: TransferStats {
+                copied: 0,
+                hardlinked: 0,
+                skipped: 0,
+                bytes_transferred: 0,
+            },
+            objects_to_transfer: needed.blobs.len() + needed.trees.len() + needed.commits.len(),
+        });
+    }
+
     // copy objects
     let stats = copy_objects(src, dst, &needed)?;
 
@@ -64,6 +80,7 @@ pub fn push_local(
     Ok(PushResult {
         hash: src_hash,
         stats,
+        objects_to_transfer: 0,
     })
 }
 
@@ -97,6 +114,16 @@ pub fn push_ssh(
 
     // ask remote what it needs
     let needed = conn.want_objects(&all_objects)?;
+
+    // dry run: return what would be transferred without doing anything
+    if options.dry_run {
+        conn.close()?;
+        return Ok(PushResult {
+            hash: local_hash,
+            stats: TransferStats::default(),
+            objects_to_transfer: needed.blobs.len() + needed.trees.len() + needed.commits.len(),
+        });
+    }
 
     // send needed objects
     let mut stats = TransferStats::default();
@@ -133,6 +160,7 @@ pub fn push_ssh(
     Ok(PushResult {
         hash: local_hash,
         stats,
+        objects_to_transfer: 0,
     })
 }
 
@@ -242,6 +270,8 @@ fn object_path(base: &Path, hash: &Hash) -> std::path::PathBuf {
 pub struct PushResult {
     pub hash: Hash,
     pub stats: TransferStats,
+    /// number of objects that would be transferred (for dry run)
+    pub objects_to_transfer: usize,
 }
 
 #[cfg(test)]
@@ -361,7 +391,7 @@ mod tests {
         let hash2 = commit(&src2, &source2, "test", Some("other"), None).unwrap();
 
         // force push should succeed
-        let options = PushOptions { force: true };
+        let options = PushOptions { force: true, dry_run: false };
         let result = push_local(&src2, &dst, "test", &options).unwrap();
         assert_eq!(result.hash, hash2);
     }
