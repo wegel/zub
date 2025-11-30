@@ -102,6 +102,9 @@ pub enum Error {
 
     #[error("corrupt object: {0}")]
     CorruptObjectMessage(String),
+
+    #[error("invalid object type: {0}")]
+    InvalidObjectType(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

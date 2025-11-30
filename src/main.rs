@@ -5,12 +5,14 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+use std::io::{self, Write};
+
 use zub::ops::{
     checkout, commit, diff, fsck, gc, log, ls_tree, ls_tree_recursive, union_checkout, union_trees,
     CheckoutOptions, ConflictResolution, UnionCheckoutOptions, UnionOptions,
 };
 use zub::transport::{pull_local, push_local, PullOptions, PushOptions};
-use zub::Repo;
+use zub::{read_blob, read_commit, read_tree, Hash, Repo};
 
 #[derive(Parser)]
 #[command(name = "zub")]
@@ -189,6 +191,25 @@ enum Commands {
     DeleteRef {
         /// ref name
         ref_name: String,
+    },
+
+    /// show contents of an object
+    CatFile {
+        /// object type (blob, tree, commit)
+        object_type: String,
+
+        /// object hash
+        object: String,
+    },
+
+    /// resolve a ref to a hash
+    RevParse {
+        /// ref or hash to resolve
+        rev: String,
+
+        /// output short hash (first 12 chars)
+        #[arg(long)]
+        short: bool,
     },
 }
 
@@ -432,6 +453,50 @@ fn run(cli: Cli) -> zub::Result<()> {
             let repo = Repo::open(&cli.repo)?;
             zub::delete_ref(&repo, &ref_name)?;
             println!("deleted ref {}", ref_name);
+        }
+
+        Commands::CatFile { object_type, object } => {
+            let repo = Repo::open(&cli.repo)?;
+            let hash = Hash::from_hex(&object)?;
+
+            match object_type.as_str() {
+                "blob" => {
+                    let data = read_blob(&repo, &hash)?;
+                    io::stdout()
+                        .write_all(&data)
+                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                }
+                "tree" => {
+                    let tree = read_tree(&repo, &hash)?;
+                    for entry in tree.entries() {
+                        println!("{} {}", entry.kind.type_name(), entry.name);
+                    }
+                }
+                "commit" => {
+                    let commit = read_commit(&repo, &hash)?;
+                    println!("tree {}", commit.tree);
+                    for parent in &commit.parents {
+                        println!("parent {}", parent);
+                    }
+                    println!("author {}", commit.author);
+                    println!("timestamp {}", commit.timestamp);
+                    println!();
+                    println!("{}", commit.message);
+                }
+                _ => {
+                    return Err(zub::Error::InvalidObjectType(object_type));
+                }
+            }
+        }
+
+        Commands::RevParse { rev, short } => {
+            let repo = Repo::open(&cli.repo)?;
+            let hash = zub::resolve_ref(&repo, &rev)?;
+            if short {
+                println!("{}", &hash.to_hex()[..12]);
+            } else {
+                println!("{}", hash);
+            }
         }
     }
 
