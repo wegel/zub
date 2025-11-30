@@ -14,14 +14,24 @@ use crate::repo::Repo;
 use crate::types::{EntryKind, Tree};
 
 /// checkout options
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct CheckoutOptions {
     /// overwrite existing files
     pub force: bool,
-    /// use hardlinks when possible
+    /// use hardlinks when possible (default: true)
     pub hardlink: bool,
     /// preserve sparse file holes
     pub preserve_sparse: bool,
+}
+
+impl Default for CheckoutOptions {
+    fn default() -> Self {
+        Self {
+            force: false,
+            hardlink: true,
+            preserve_sparse: false,
+        }
+    }
 }
 
 /// checkout a ref to a target directory
@@ -48,7 +58,7 @@ pub fn checkout(repo: &Repo, ref_name: &str, target: &Path, opts: CheckoutOption
 
     // checkout tree
     let mut hardlink_tracker = CheckoutHardlinkTracker::new();
-    checkout_tree(repo, &tree, target, "", &mut hardlink_tracker)
+    checkout_tree(repo, &tree, target, "", &mut hardlink_tracker, &opts)
 }
 
 /// checkout a tree to a directory (recursive helper)
@@ -58,6 +68,7 @@ fn checkout_tree(
     target: &Path,
     prefix: &str,
     hardlink_tracker: &mut CheckoutHardlinkTracker,
+    opts: &CheckoutOptions,
 ) -> Result<()> {
     fs::create_dir_all(target).with_path(target)?;
 
@@ -78,7 +89,7 @@ fn checkout_tree(
             }
 
             EntryKind::Regular { hash, sparse_map, .. } => {
-                checkout_regular_file(repo, &entry_path, hash, sparse_map.as_deref())?;
+                checkout_regular_file(repo, &entry_path, hash, sparse_map.as_deref(), opts)?;
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
@@ -90,7 +101,7 @@ fn checkout_tree(
             EntryKind::Directory { hash, uid, gid, mode, xattrs } => {
                 // recurse
                 let subtree = read_tree(repo, hash)?;
-                checkout_tree(repo, &subtree, &entry_path, &logical_path, hardlink_tracker)?;
+                checkout_tree(repo, &subtree, &entry_path, &logical_path, hardlink_tracker, opts)?;
 
                 // apply directory metadata after contents are created
                 apply_metadata(&entry_path, *uid, *gid, *mode, xattrs)?;
@@ -149,12 +160,13 @@ fn checkout_tree(
     Ok(())
 }
 
-/// checkout a regular file (hardlink from blob store, or copy for sparse)
+/// checkout a regular file (hardlink from blob store, or copy for sparse/--copy)
 fn checkout_regular_file(
     repo: &Repo,
     dest: &Path,
     hash: &Hash,
     sparse_map: Option<&[crate::types::SparseRegion]>,
+    opts: &CheckoutOptions,
 ) -> Result<()> {
     // remove existing
     if dest.exists() {
@@ -162,7 +174,7 @@ fn checkout_regular_file(
     }
 
     match sparse_map {
-        Some(regions) if !regions.is_empty() => {
+        Some(regions) if !regions.is_empty() && opts.preserve_sparse => {
             // sparse file: must copy and recreate holes
             let data = read_blob(repo, hash)?;
             let total_size: u64 = regions.iter().map(|r| r.end()).max().unwrap_or(0);
@@ -174,17 +186,24 @@ fn checkout_regular_file(
             fs::set_permissions(dest, meta.permissions()).with_path(dest)?;
         }
 
-        Some(_) => {
+        Some(regions) if regions.is_empty() => {
             // all holes (empty sparse file)
             // just create empty file
             fs::write(dest, b"").with_path(dest)?;
         }
 
-        None => {
-            // non-sparse: hardlink from blob store
+        _ if opts.hardlink => {
+            // non-sparse with hardlink: hardlink from blob store
             let blob = blob_path(repo, hash);
             fs::hard_link(&blob, dest).with_path(dest)?;
             // metadata comes along with the hardlink (shared inode)
+        }
+
+        _ => {
+            // copy mode (--copy flag or sparse without preserve_sparse)
+            let blob = blob_path(repo, hash);
+            fs::copy(&blob, dest).with_path(dest)?;
+            // metadata was copied with the file
         }
     }
 
