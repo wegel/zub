@@ -21,6 +21,18 @@ pub fn commit(
     message: Option<&str>,
     author: Option<&str>,
 ) -> Result<Hash> {
+    commit_with_metadata(repo, source, ref_name, message, author, &[])
+}
+
+/// commit a directory tree to a ref with custom metadata
+pub fn commit_with_metadata(
+    repo: &Repo,
+    source: &Path,
+    ref_name: &str,
+    message: Option<&str>,
+    author: Option<&str>,
+    metadata: &[(&str, &str)],
+) -> Result<Hash> {
     let mut hardlink_tracker = HardlinkTracker::new();
 
     // commit the root tree
@@ -33,13 +45,16 @@ pub fn commit(
         Err(e) => return Err(e),
     };
 
-    // create commit
-    let commit = Commit::new(
+    // create commit with metadata
+    let mut commit = Commit::new(
         tree_hash,
         parents,
         author.unwrap_or("zub"),
         message.unwrap_or(""),
     );
+    for (key, value) in metadata {
+        commit = commit.with_metadata(*key, *value);
+    }
 
     let commit_hash = write_commit(repo, &commit)?;
 

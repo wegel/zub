@@ -11,7 +11,7 @@ mod union;
 mod union_checkout;
 
 pub use checkout::{checkout, CheckoutOptions};
-pub use commit::commit;
+pub use commit::{commit, commit_with_metadata};
 pub use diff::{diff, diff_trees};
 pub use fsck::{fsck, CorruptObject, FsckReport, MissingObject, ObjectType};
 pub use gc::{gc, GcStats};

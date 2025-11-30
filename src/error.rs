@@ -105,6 +105,9 @@ pub enum Error {
 
     #[error("invalid object type: {0}")]
     InvalidObjectType(String),
+
+    #[error("metadata key not found: {0}")]
+    MetadataKeyNotFound(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -220,6 +220,16 @@ enum Commands {
         short: bool,
     },
 
+    /// show commit information
+    Show {
+        /// ref or commit hash to show
+        rev: String,
+
+        /// print specific metadata key
+        #[arg(long = "print-metadata-key")]
+        metadata_key: Option<String>,
+    },
+
     /// remote helper (used by SSH transport)
     #[command(name = "zub-remote")]
     Remote {
@@ -523,6 +533,43 @@ fn run(cli: Cli) -> zub::Result<()> {
                 println!("{}", &hash.to_hex()[..12]);
             } else {
                 println!("{}", hash);
+            }
+        }
+
+        Commands::Show { rev, metadata_key } => {
+            let repo = Repo::open(&cli.repo)?;
+            let hash = zub::resolve_ref(&repo, &rev)?;
+            let commit = read_commit(&repo, &hash)?;
+
+            match metadata_key {
+                Some(key) => {
+                    // print specific metadata key
+                    match commit.metadata.get(&key) {
+                        Some(value) => println!("{}", value),
+                        None => {
+                            return Err(zub::Error::MetadataKeyNotFound(key));
+                        }
+                    }
+                }
+                None => {
+                    // print full commit info
+                    println!("commit {}", hash);
+                    println!("tree {}", commit.tree);
+                    for parent in &commit.parents {
+                        println!("parent {}", parent);
+                    }
+                    println!("author {}", commit.author);
+                    println!("timestamp {}", commit.timestamp);
+                    if !commit.metadata.is_empty() {
+                        println!();
+                        println!("metadata:");
+                        for (k, v) in &commit.metadata {
+                            println!("  {}: {}", k, v);
+                        }
+                    }
+                    println!();
+                    println!("{}", commit.message);
+                }
             }
         }
 
