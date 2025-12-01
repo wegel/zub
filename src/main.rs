@@ -213,6 +213,12 @@ enum Commands {
         ref_name: String,
     },
 
+    /// delete refs matching a glob pattern
+    DeleteRefs {
+        /// glob pattern (e.g. "x86_64/pkg/*/neovim/*")
+        pattern: String,
+    },
+
     /// show contents of an object
     CatFile {
         /// object type (blob, tree, commit)
@@ -539,6 +545,18 @@ fn run(cli: Cli) -> zub::Result<()> {
             let repo = Repo::open(&cli.repo)?;
             zub::delete_ref(&repo, &ref_name)?;
             println!("deleted ref {}", ref_name);
+        }
+
+        Commands::DeleteRefs { pattern } => {
+            let repo = Repo::open(&cli.repo)?;
+            let deleted = zub::delete_refs_matching(&repo, &pattern)?;
+            if deleted.is_empty() {
+                println!("no refs matched pattern {}", pattern);
+            } else {
+                for r in deleted {
+                    println!("deleted ref {}", r);
+                }
+            }
         }
 
         Commands::CatFile {

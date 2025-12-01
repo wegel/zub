@@ -57,7 +57,8 @@ pub use object::{
     write_commit, write_tree,
 };
 pub use refs::{
-    delete_ref, list_refs, list_refs_matching, read_ref, ref_exists, resolve_ref, write_ref,
+    delete_ref, delete_refs_matching, list_refs, list_refs_matching, read_ref, ref_exists,
+    resolve_ref, write_ref,
 };
 pub use repo::Repo;
 pub use types::{ChangeKind, Commit, DiffEntry, EntryKind, SparseRegion, Tree, TreeEntry, Xattr};

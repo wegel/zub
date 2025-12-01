@@ -74,6 +74,15 @@ pub fn delete_ref(repo: &Repo, ref_name: &str) -> Result<()> {
     })
 }
 
+/// delete refs matching a glob pattern, returns list of deleted refs
+pub fn delete_refs_matching(repo: &Repo, pattern: &str) -> Result<Vec<String>> {
+    let matching = list_refs_matching(repo, pattern)?;
+    for ref_name in &matching {
+        delete_ref(repo, ref_name)?;
+    }
+    Ok(matching)
+}
+
 /// resolve a ref or hash string to a hash
 ///
 /// if the string looks like a hash (64 hex chars), parse it directly.
