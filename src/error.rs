@@ -17,6 +17,9 @@ pub enum Error {
     #[error("invalid ref name: {0}")]
     InvalidRef(String),
 
+    #[error("path not found in tree: {0}")]
+    PathNotFound(String),
+
     #[error("object not found: {0}")]
     ObjectNotFound(Hash),
 

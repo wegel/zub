@@ -8,8 +8,9 @@ use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
 use zub::ops::{
-    checkout, commit, diff, fsck, gc, log, ls_tree, ls_tree_recursive, union_checkout, union_trees,
-    CheckoutOptions, ConflictResolution, UnionCheckoutOptions, UnionOptions,
+    checkout, commit, diff, fsck, gc, log, ls_tree, ls_tree_recursive, map, union_checkout,
+    union_trees, CheckoutOptions, ConflictResolution, MapOptions, UnionCheckoutOptions,
+    UnionOptions,
 };
 use zub::transport::{pull_local, push_local, PullOptions, PushOptions};
 use zub::{read_blob, read_commit, read_tree, Hash, Repo};
@@ -148,6 +149,17 @@ enum Commands {
     /// garbage collect unreachable objects
     Gc {
         /// only show what would be removed
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// remap blob ownership to current user namespace
+    Remap {
+        /// skip blobs that can't be remapped instead of erroring
+        #[arg(long)]
+        force: bool,
+
+        /// only show what would be done
         #[arg(long)]
         dry_run: bool,
     },
@@ -414,6 +426,31 @@ fn run(cli: Cli) -> zub::Result<()> {
                 action, stats.blobs_removed, stats.trees_removed, stats.commits_removed
             );
             println!("freed {} bytes", stats.bytes_freed);
+        }
+
+        Commands::Remap { force, dry_run } => {
+            let mut repo = Repo::open(&cli.repo)?;
+            let options = MapOptions { force, dry_run };
+            let stats = map(&mut repo, &options)?;
+
+            if stats.total == 0 && stats.remapped == 0 {
+                println!("namespace mappings match, nothing to do");
+            } else {
+                let action = if dry_run { "would remap" } else { "remapped" };
+                println!("{} {} of {} blobs", action, stats.remapped, stats.total);
+                if stats.skipped_unmapped_source > 0 {
+                    println!(
+                        "skipped {} blobs (uid/gid not in source namespace)",
+                        stats.skipped_unmapped_source
+                    );
+                }
+                if stats.skipped_unmapped_target > 0 {
+                    println!(
+                        "skipped {} blobs (uid/gid not mappable to current namespace)",
+                        stats.skipped_unmapped_target
+                    );
+                }
+            }
         }
 
         Commands::Push {

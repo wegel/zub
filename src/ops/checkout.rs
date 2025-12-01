@@ -3,9 +3,8 @@ use std::path::Path;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::fs::{
-    apply_metadata, create_block_device, create_char_device, create_directory, create_fifo,
-    create_hardlink, create_socket_placeholder, create_symlink, write_sparse_file,
-    CheckoutHardlinkTracker,
+    apply_metadata, create_block_device, create_char_device, create_fifo, create_hardlink,
+    create_socket_placeholder, create_symlink, write_sparse_file, CheckoutHardlinkTracker,
 };
 use crate::hash::Hash;
 use crate::object::{blob_path, read_blob, read_commit, read_tree};

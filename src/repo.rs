@@ -1,8 +1,7 @@
 use std::fs::File;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use nix::fcntl::{flock, FlockArg};
+use nix::fcntl::{Flock, FlockArg};
 
 use crate::config::Config;
 use crate::error::{Error, IoResultExt, Result};
@@ -129,10 +128,10 @@ impl Repo {
         let lock_path = self.lock_path();
         let file = File::create(&lock_path).with_path(&lock_path)?;
 
-        flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock)
+        let flock = Flock::lock(file, FlockArg::LockExclusiveNonblock)
             .map_err(|_| Error::LockContention)?;
 
-        Ok(RepoLock { file })
+        Ok(RepoLock { flock })
     }
 
     /// try to acquire exclusive lock, returning None if already locked
@@ -140,9 +139,9 @@ impl Repo {
         let lock_path = self.lock_path();
         let file = File::create(&lock_path).with_path(&lock_path)?;
 
-        match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
-            Ok(()) => Ok(Some(RepoLock { file })),
-            Err(nix::errno::Errno::EWOULDBLOCK) => Ok(None),
+        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            Ok(flock) => Ok(Some(RepoLock { flock })),
+            Err((_, nix::errno::Errno::EWOULDBLOCK)) => Ok(None),
             Err(_) => Err(Error::LockContention),
         }
     }
@@ -151,16 +150,12 @@ impl Repo {
 /// guard that holds repository lock until dropped
 pub struct RepoLock {
     #[allow(dead_code)]
-    file: File,
+    flock: Flock<File>,
 }
-
-impl Drop for RepoLock {
-    fn drop(&mut self) {
-        // lock is released when file is closed
-    }
-}
+// lock is released automatically when Flock is dropped
 
 /// helper to run a function while holding the repository lock
+#[allow(dead_code)]
 pub fn with_lock<T, F>(repo: &Repo, f: F) -> Result<T>
 where
     F: FnOnce() -> Result<T>,

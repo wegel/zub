@@ -88,6 +88,7 @@ pub fn write_blob(
 }
 
 /// write a blob with streaming content (for large files)
+#[allow(dead_code)]
 pub fn write_blob_streaming<R: Read>(
     repo: &Repo,
     reader: &mut R,
@@ -191,6 +192,7 @@ pub fn read_blob(repo: &Repo, hash: &Hash) -> Result<Vec<u8>> {
 }
 
 /// read blob content into a writer (streaming)
+#[allow(dead_code)]
 pub fn read_blob_to<W: Write>(repo: &Repo, hash: &Hash, writer: &mut W) -> Result<u64> {
     let path = blob_path(repo, hash);
     let mut file = File::open(&path).map_err(|e| {

@@ -97,6 +97,7 @@ pub fn commit_path(repo: &Repo, hash: &Hash) -> PathBuf {
 }
 
 /// check if a commit exists in the object store
+#[allow(dead_code)]
 pub fn commit_exists(repo: &Repo, hash: &Hash) -> bool {
     commit_path(repo, hash).exists()
 }

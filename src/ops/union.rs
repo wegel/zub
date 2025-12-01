@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::error::{Error, Result};
 use crate::hash::Hash;
 use crate::object::{read_commit, read_tree, write_commit, write_tree};
@@ -83,7 +81,7 @@ fn merge_trees(repo: &Repo, trees: &[Tree], on_conflict: ConflictResolution) -> 
 
     for name in all_names {
         // collect entries with this name from each tree
-        let mut entries_for_name: Vec<(usize, &TreeEntry)> = trees
+        let entries_for_name: Vec<(usize, &TreeEntry)> = trees
             .iter()
             .enumerate()
             .filter_map(|(i, t)| t.get(&name).map(|e| (i, e)))

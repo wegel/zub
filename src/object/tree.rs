@@ -97,6 +97,7 @@ pub fn tree_path(repo: &Repo, hash: &Hash) -> PathBuf {
 }
 
 /// check if a tree exists in the object store
+#[allow(dead_code)]
 pub fn tree_exists(repo: &Repo, hash: &Hash) -> bool {
     tree_path(repo, hash).exists()
 }

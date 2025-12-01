@@ -6,12 +6,12 @@ use walkdir::WalkDir;
 
 use crate::error::{IoResultExt, Result};
 use crate::fs::{detect_sparse_regions, read_data_regions, read_xattrs, FileMetadata, FileType, HardlinkTracker};
-use crate::hash::{compute_blob_hash, compute_symlink_hash, Hash, SYMLINK_MODE};
+use crate::hash::{compute_symlink_hash, Hash, SYMLINK_MODE};
 use crate::namespace::outside_to_inside;
 use crate::object::{write_blob, write_commit, write_tree};
 use crate::refs::write_ref;
 use crate::repo::Repo;
-use crate::types::{Commit, EntryKind, SparseRegion, Tree, TreeEntry, Xattr};
+use crate::types::{Commit, EntryKind, Tree, TreeEntry};
 
 /// commit a directory tree to a ref
 pub fn commit(
@@ -234,6 +234,7 @@ fn commit_tree(
 }
 
 /// count files in a directory (for progress reporting)
+#[allow(dead_code)]
 pub fn count_files(path: &Path) -> usize {
     WalkDir::new(path)
         .into_iter()

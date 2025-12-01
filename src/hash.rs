@@ -135,12 +135,14 @@ pub fn compute_symlink_hash(inside_uid: u32, inside_gid: u32, xattrs: &[Xattr], 
 }
 
 /// compute hash of compressed bytes (for trees and commits)
+#[allow(dead_code)]
 pub fn compute_compressed_hash(compressed: &[u8]) -> Hash {
     let digest = Sha256::digest(compressed);
     Hash(digest.into())
 }
 
 /// streaming blob hasher for large files
+#[allow(dead_code)]
 pub struct BlobHasher {
     hasher: Sha256,
 }
