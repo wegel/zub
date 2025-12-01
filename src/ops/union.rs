@@ -116,7 +116,14 @@ fn merge_entries(
         let mut last_metadata = None;
 
         for (_, entry) in entries {
-            if let EntryKind::Directory { hash, uid, gid, mode, xattrs } = &entry.kind {
+            if let EntryKind::Directory {
+                hash,
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } = &entry.kind
+            {
                 let subtree = read_tree(repo, hash)?;
                 subtrees.push(subtree);
                 last_metadata = Some((*uid, *gid, *mode, xattrs.clone()));
@@ -149,15 +156,9 @@ fn merge_entries(
 
         // same type conflict (both files, both symlinks, etc.)
         match on_conflict {
-            ConflictResolution::Error => {
-                Err(Error::UnionConflict(std::path::PathBuf::from(name)))
-            }
-            ConflictResolution::First => {
-                Ok(entries[0].1.clone())
-            }
-            ConflictResolution::Last => {
-                Ok(entries[entries.len() - 1].1.clone())
-            }
+            ConflictResolution::Error => Err(Error::UnionConflict(std::path::PathBuf::from(name))),
+            ConflictResolution::First => Ok(entries[0].1.clone()),
+            ConflictResolution::Last => Ok(entries[entries.len() - 1].1.clone()),
         }
     }
 }
@@ -315,11 +316,21 @@ mod tests {
         for (i, name) in ["ref1", "ref2", "ref3"].iter().enumerate() {
             let source = dir.path().join(format!("source{}", i));
             fs::create_dir(&source).unwrap();
-            fs::write(source.join(format!("file{}.txt", i)), format!("content{}", i)).unwrap();
+            fs::write(
+                source.join(format!("file{}.txt", i)),
+                format!("content{}", i),
+            )
+            .unwrap();
             commit(&repo, &source, name, None, None).unwrap();
         }
 
-        let hash = union(&repo, &["ref1", "ref2", "ref3"], "merged", Default::default()).unwrap();
+        let hash = union(
+            &repo,
+            &["ref1", "ref2", "ref3"],
+            "merged",
+            Default::default(),
+        )
+        .unwrap();
 
         let commit_obj = read_commit(&repo, &hash).unwrap();
         let tree = read_tree(&repo, &commit_obj.tree).unwrap();

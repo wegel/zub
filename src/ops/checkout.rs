@@ -87,7 +87,9 @@ fn checkout_tree(
                 continue;
             }
 
-            EntryKind::Regular { hash, sparse_map, .. } => {
+            EntryKind::Regular {
+                hash, sparse_map, ..
+            } => {
                 checkout_regular_file(repo, &entry_path, hash, sparse_map.as_deref(), opts)?;
                 hardlink_tracker.record(&logical_path, entry_path);
             }
@@ -97,16 +99,36 @@ fn checkout_tree(
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
-            EntryKind::Directory { hash, uid, gid, mode, xattrs } => {
+            EntryKind::Directory {
+                hash,
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 // recurse
                 let subtree = read_tree(repo, hash)?;
-                checkout_tree(repo, &subtree, &entry_path, &logical_path, hardlink_tracker, opts)?;
+                checkout_tree(
+                    repo,
+                    &subtree,
+                    &entry_path,
+                    &logical_path,
+                    hardlink_tracker,
+                    opts,
+                )?;
 
                 // apply directory metadata after contents are created
                 apply_metadata(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
 
-            EntryKind::BlockDevice { major, minor, uid, gid, mode, xattrs } => {
+            EntryKind::BlockDevice {
+                major,
+                minor,
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 match create_block_device(&entry_path, *major, *minor, *uid, *gid, *mode, xattrs) {
                     Ok(()) => {}
                     Err(Error::DeviceNodePermission(_)) => {
@@ -119,24 +141,39 @@ fn checkout_tree(
                 }
             }
 
-            EntryKind::CharDevice { major, minor, uid, gid, mode, xattrs } => {
-                match create_char_device(&entry_path, *major, *minor, *uid, *gid, *mode, xattrs) {
-                    Ok(()) => {}
-                    Err(Error::DeviceNodePermission(_)) => {
-                        eprintln!(
-                            "warning: cannot create char device {:?} without privileges, skipping",
-                            entry_path
-                        );
-                    }
-                    Err(e) => return Err(e),
+            EntryKind::CharDevice {
+                major,
+                minor,
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => match create_char_device(&entry_path, *major, *minor, *uid, *gid, *mode, xattrs) {
+                Ok(()) => {}
+                Err(Error::DeviceNodePermission(_)) => {
+                    eprintln!(
+                        "warning: cannot create char device {:?} without privileges, skipping",
+                        entry_path
+                    );
                 }
-            }
+                Err(e) => return Err(e),
+            },
 
-            EntryKind::Fifo { uid, gid, mode, xattrs } => {
+            EntryKind::Fifo {
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 create_fifo(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
 
-            EntryKind::Socket { uid, gid, mode, xattrs } => {
+            EntryKind::Socket {
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 create_socket_placeholder(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
         }
@@ -148,9 +185,9 @@ fn checkout_tree(
             let entry_path = target.join(&entry.name);
 
             // look up the target's filesystem path
-            let target_fs_path = hardlink_tracker.get(target_path).ok_or_else(|| {
-                Error::HardlinkTargetNotFound(target_path.clone())
-            })?;
+            let target_fs_path = hardlink_tracker
+                .get(target_path)
+                .ok_or_else(|| Error::HardlinkTargetNotFound(target_path.clone()))?;
 
             create_hardlink(&entry_path, target_fs_path)?;
         }
@@ -362,7 +399,10 @@ mod tests {
             &repo,
             "test",
             &target,
-            CheckoutOptions { force: true, ..Default::default() },
+            CheckoutOptions {
+                force: true,
+                ..Default::default()
+            },
         )
         .unwrap();
 

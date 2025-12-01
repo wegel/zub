@@ -174,11 +174,15 @@ fn remap_single_blob(
 
     // perform the chown
     if !options.dry_run {
-        chown(path, Some(Uid::from_raw(new_outside_uid)), Some(Gid::from_raw(new_outside_gid)))
-            .map_err(|e| Error::Io {
-                path: path.to_path_buf(),
-                source: std::io::Error::from_raw_os_error(e as i32),
-            })?;
+        chown(
+            path,
+            Some(Uid::from_raw(new_outside_uid)),
+            Some(Gid::from_raw(new_outside_gid)),
+        )
+        .map_err(|e| Error::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::from_raw_os_error(e as i32),
+        })?;
     }
 
     Ok(RemapResult::Remapped)

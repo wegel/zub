@@ -130,10 +130,7 @@ mod tests {
         // typical podman unshare mapping:
         // 0 -> 1000 (root inside maps to user outside)
         // 1-65536 -> 100000-165535
-        let map = vec![
-            MapEntry::new(0, 1000, 1),
-            MapEntry::new(1, 100000, 65536),
-        ];
+        let map = vec![MapEntry::new(0, 1000, 1), MapEntry::new(1, 100000, 65536)];
 
         // root
         assert_eq!(outside_to_inside(1000, &map), Some(0));
@@ -149,10 +146,7 @@ mod tests {
 
     #[test]
     fn test_inside_to_outside_simple() {
-        let map = vec![
-            MapEntry::new(0, 1000, 1),
-            MapEntry::new(1, 100000, 65536),
-        ];
+        let map = vec![MapEntry::new(0, 1000, 1), MapEntry::new(1, 100000, 65536)];
 
         assert_eq!(inside_to_outside(0, &map), Some(1000));
         assert_eq!(inside_to_outside(1, &map), Some(100000));
@@ -165,16 +159,10 @@ mod tests {
     #[test]
     fn test_remap_between_namespaces() {
         // machine A: 0->1000, 1-65536->100000-165535
-        let map_a = vec![
-            MapEntry::new(0, 1000, 1),
-            MapEntry::new(1, 100000, 65536),
-        ];
+        let map_a = vec![MapEntry::new(0, 1000, 1), MapEntry::new(1, 100000, 65536)];
 
         // machine B: 0->2000, 1-65536->200000-265535
-        let map_b = vec![
-            MapEntry::new(0, 2000, 1),
-            MapEntry::new(1, 200000, 65536),
-        ];
+        let map_b = vec![MapEntry::new(0, 2000, 1), MapEntry::new(1, 200000, 65536)];
 
         // file owned by uid 100189 on machine A (inside uid 190)
         // should become uid 200189 on machine B
@@ -192,7 +180,10 @@ mod tests {
         // everything maps to itself
         assert_eq!(outside_to_inside(0, &id.uid_map), Some(0));
         assert_eq!(outside_to_inside(1000, &id.uid_map), Some(1000));
-        assert_eq!(outside_to_inside(u32::MAX - 1, &id.uid_map), Some(u32::MAX - 1));
+        assert_eq!(
+            outside_to_inside(u32::MAX - 1, &id.uid_map),
+            Some(u32::MAX - 1)
+        );
 
         assert_eq!(inside_to_outside(0, &id.uid_map), Some(0));
         assert_eq!(inside_to_outside(65535, &id.uid_map), Some(65535));

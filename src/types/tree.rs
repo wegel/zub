@@ -83,10 +83,7 @@ fn validate_entry_name(name: &str) -> Result<()> {
         )));
     }
     if name == "." || name == ".." {
-        return Err(Error::InvalidEntryName(format!(
-            "reserved name: {}",
-            name
-        )));
+        return Err(Error::InvalidEntryName(format!("reserved name: {}", name)));
     }
     Ok(())
 }
@@ -259,7 +256,13 @@ impl EntryKind {
     }
 
     /// create a directory entry with xattrs
-    pub fn directory_with_xattrs(hash: Hash, uid: u32, gid: u32, mode: u32, xattrs: Vec<Xattr>) -> Self {
+    pub fn directory_with_xattrs(
+        hash: Hash,
+        uid: u32,
+        gid: u32,
+        mode: u32,
+        xattrs: Vec<Xattr>,
+    ) -> Self {
         Self::Directory {
             hash,
             uid,
@@ -327,7 +330,10 @@ mod tests {
 
     #[test]
     fn test_tree_rejects_null_in_name() {
-        let entries = vec![TreeEntry::new("foo\0bar", EntryKind::regular(Hash::ZERO, 0))];
+        let entries = vec![TreeEntry::new(
+            "foo\0bar",
+            EntryKind::regular(Hash::ZERO, 0),
+        )];
         assert!(Tree::new(entries).is_err());
     }
 
@@ -453,13 +459,13 @@ mod tests {
 
     #[test]
     fn test_sparse_entry() {
-        let regions = vec![
-            SparseRegion::new(0, 100),
-            SparseRegion::new(1000, 200),
-        ];
+        let regions = vec![SparseRegion::new(0, 100), SparseRegion::new(1000, 200)];
         let kind = EntryKind::sparse(Hash::ZERO, 2000, regions.clone());
 
-        if let EntryKind::Regular { sparse_map, size, .. } = kind {
+        if let EntryKind::Regular {
+            sparse_map, size, ..
+        } = kind
+        {
             assert_eq!(size, 2000);
             assert_eq!(sparse_map, Some(regions));
         } else {

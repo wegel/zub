@@ -118,7 +118,8 @@ mod tests {
     fn test_write_and_read_commit() {
         let (_dir, repo) = test_repo();
 
-        let commit = Commit::with_timestamp(Hash::ZERO, vec![], "author", 1234567890, "test commit");
+        let commit =
+            Commit::with_timestamp(Hash::ZERO, vec![], "author", 1234567890, "test commit");
 
         let hash = write_commit(&repo, &commit).unwrap();
         assert!(commit_exists(&repo, &hash));
@@ -146,7 +147,13 @@ mod tests {
         let parent =
             Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
                 .unwrap();
-        let commit = Commit::with_timestamp(Hash::ZERO, vec![parent], "author", 1234567890, "child commit");
+        let commit = Commit::with_timestamp(
+            Hash::ZERO,
+            vec![parent],
+            "author",
+            1234567890,
+            "child commit",
+        );
 
         let hash = write_commit(&repo, &commit).unwrap();
         let read_commit = read_commit(&repo, &hash).unwrap();
@@ -166,8 +173,14 @@ mod tests {
         let hash = write_commit(&repo, &commit).unwrap();
         let read_commit = read_commit(&repo, &hash).unwrap();
 
-        assert_eq!(read_commit.metadata.get("key1"), Some(&"value1".to_string()));
-        assert_eq!(read_commit.metadata.get("key2"), Some(&"value2".to_string()));
+        assert_eq!(
+            read_commit.metadata.get("key1"),
+            Some(&"value1".to_string())
+        );
+        assert_eq!(
+            read_commit.metadata.get("key2"),
+            Some(&"value2".to_string())
+        );
     }
 
     #[test]
@@ -191,8 +204,13 @@ mod tests {
         let p2 = Hash::from_hex("2222222222222222222222222222222222222222222222222222222222222222")
             .unwrap();
 
-        let commit =
-            Commit::with_timestamp(Hash::ZERO, vec![p1, p2], "author", 1234567890, "merge commit");
+        let commit = Commit::with_timestamp(
+            Hash::ZERO,
+            vec![p1, p2],
+            "author",
+            1234567890,
+            "merge commit",
+        );
 
         assert!(commit.is_merge());
 

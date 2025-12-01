@@ -58,7 +58,14 @@ pub fn checkout_union(
         let commit = read_commit(repo, &commit_hash)?;
         let tree = read_tree(repo, &commit.tree)?;
 
-        checkout_tree_union(repo, &tree, target, "", opts.on_conflict, &mut hardlink_tracker)?;
+        checkout_tree_union(
+            repo,
+            &tree,
+            target,
+            "",
+            opts.on_conflict,
+            &mut hardlink_tracker,
+        )?;
     }
 
     Ok(())
@@ -87,7 +94,9 @@ fn checkout_tree_union(
         match &entry.kind {
             EntryKind::Hardlink { .. } => continue, // second pass
 
-            EntryKind::Regular { hash, sparse_map, .. } => {
+            EntryKind::Regular {
+                hash, sparse_map, ..
+            } => {
                 if entry_path.exists() {
                     // check if it's a directory (type conflict)
                     if entry_path.is_dir() {
@@ -138,7 +147,13 @@ fn checkout_tree_union(
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
-            EntryKind::Directory { hash, uid, gid, mode, xattrs } => {
+            EntryKind::Directory {
+                hash,
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 if entry_path.exists() && !entry_path.is_dir() {
                     // file exists where we want a directory
                     return Err(Error::UnionTypeConflict {
@@ -162,7 +177,14 @@ fn checkout_tree_union(
                 apply_metadata(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
 
-            EntryKind::BlockDevice { major, minor, uid, gid, mode, xattrs } => {
+            EntryKind::BlockDevice {
+                major,
+                minor,
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 if entry_path.exists() {
                     match on_conflict {
                         ConflictResolution::Error => {
@@ -187,7 +209,14 @@ fn checkout_tree_union(
                 }
             }
 
-            EntryKind::CharDevice { major, minor, uid, gid, mode, xattrs } => {
+            EntryKind::CharDevice {
+                major,
+                minor,
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 if entry_path.exists() {
                     match on_conflict {
                         ConflictResolution::Error => {
@@ -212,7 +241,12 @@ fn checkout_tree_union(
                 }
             }
 
-            EntryKind::Fifo { uid, gid, mode, xattrs } => {
+            EntryKind::Fifo {
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 if entry_path.exists() {
                     match on_conflict {
                         ConflictResolution::Error => {
@@ -228,7 +262,12 @@ fn checkout_tree_union(
                 create_fifo(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
 
-            EntryKind::Socket { uid, gid, mode, xattrs } => {
+            EntryKind::Socket {
+                uid,
+                gid,
+                mode,
+                xattrs,
+            } => {
                 if entry_path.exists() {
                     match on_conflict {
                         ConflictResolution::Error => {

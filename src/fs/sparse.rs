@@ -15,10 +15,13 @@ use crate::types::SparseRegion;
 /// returns Some(regions) where regions are the data regions
 pub fn detect_sparse_regions(file: &File) -> Result<Option<Vec<SparseRegion>>> {
     let fd = file.as_raw_fd();
-    let file_size = file.metadata().map_err(|e| crate::Error::Io {
-        path: std::path::PathBuf::from("<sparse>"),
-        source: e,
-    })?.len();
+    let file_size = file
+        .metadata()
+        .map_err(|e| crate::Error::Io {
+            path: std::path::PathBuf::from("<sparse>"),
+            source: e,
+        })?
+        .len();
 
     if file_size == 0 {
         return Ok(None); // empty file is not sparse
@@ -99,10 +102,11 @@ pub fn read_data_regions(file: &mut File, regions: &[SparseRegion]) -> Result<Ve
     let mut data = Vec::with_capacity(total_size as usize);
 
     for region in regions {
-        file.seek(SeekFrom::Start(region.offset)).map_err(|e| crate::Error::Io {
-            path: std::path::PathBuf::from("<sparse>"),
-            source: e,
-        })?;
+        file.seek(SeekFrom::Start(region.offset))
+            .map_err(|e| crate::Error::Io {
+                path: std::path::PathBuf::from("<sparse>"),
+                source: e,
+            })?;
         let mut buf = vec![0u8; region.length as usize];
         file.read_exact(&mut buf).map_err(|e| crate::Error::Io {
             path: std::path::PathBuf::from("<sparse>"),
@@ -211,10 +215,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("sparse");
 
-        let regions = vec![
-            SparseRegion::new(0, 100),
-            SparseRegion::new(1000, 200),
-        ];
+        let regions = vec![SparseRegion::new(0, 100), SparseRegion::new(1000, 200)];
 
         let data = vec![0u8; 300]; // 100 + 200 bytes
 

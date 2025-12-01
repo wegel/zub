@@ -163,10 +163,7 @@ mod tests {
         tracker.record("usr/bin/foo", "/mnt/rootfs/usr/bin/foo".into());
 
         let path = tracker.get("usr/bin/foo");
-        assert_eq!(
-            path,
-            Some(std::path::Path::new("/mnt/rootfs/usr/bin/foo"))
-        );
+        assert_eq!(path, Some(std::path::Path::new("/mnt/rootfs/usr/bin/foo")));
 
         assert!(tracker.get("nonexistent").is_none());
     }

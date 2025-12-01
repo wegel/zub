@@ -5,7 +5,9 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 use crate::error::{IoResultExt, Result};
-use crate::fs::{detect_sparse_regions, read_data_regions, read_xattrs, FileMetadata, FileType, HardlinkTracker};
+use crate::fs::{
+    detect_sparse_regions, read_data_regions, read_xattrs, FileMetadata, FileType, HardlinkTracker,
+};
 use crate::hash::{compute_symlink_hash, Hash, SYMLINK_MODE};
 use crate::namespace::outside_to_inside;
 use crate::object::{write_blob, write_commit, write_tree};
@@ -93,16 +95,17 @@ fn commit_tree(
         let meta = FileMetadata::from_path(&path)?;
 
         // convert outside uid/gid to inside values
-        let inside_uid = outside_to_inside(meta.uid, &ns.uid_map)
-            .ok_or(crate::Error::UnmappedUid(meta.uid))?;
-        let inside_gid = outside_to_inside(meta.gid, &ns.gid_map)
-            .ok_or(crate::Error::UnmappedGid(meta.gid))?;
+        let inside_uid =
+            outside_to_inside(meta.uid, &ns.uid_map).ok_or(crate::Error::UnmappedUid(meta.uid))?;
+        let inside_gid =
+            outside_to_inside(meta.gid, &ns.gid_map).ok_or(crate::Error::UnmappedGid(meta.gid))?;
 
         let kind = match meta.file_type {
             FileType::Regular => {
                 // check for hardlink
                 if meta.could_be_hardlink() {
-                    if let Some(target) = hardlink_tracker.check(meta.dev, meta.ino, &logical_path) {
+                    if let Some(target) = hardlink_tracker.check(meta.dev, meta.ino, &logical_path)
+                    {
                         entries.push(TreeEntry::new(name, EntryKind::hardlink(target)));
                         continue;
                     }
@@ -171,7 +174,13 @@ fn commit_tree(
                 // recurse
                 let subtree_hash = commit_tree(repo, &path, &logical_path, hardlink_tracker)?;
 
-                EntryKind::directory_with_xattrs(subtree_hash, inside_uid, inside_gid, meta.mode, xattrs)
+                EntryKind::directory_with_xattrs(
+                    subtree_hash,
+                    inside_uid,
+                    inside_gid,
+                    meta.mode,
+                    xattrs,
+                )
             }
 
             FileType::BlockDevice => {

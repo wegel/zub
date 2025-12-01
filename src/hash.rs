@@ -130,8 +130,19 @@ pub fn compute_blob_hash(
 
 /// compute hash for symlink (target is the "content")
 /// always uses SYMLINK_MODE for determinism
-pub fn compute_symlink_hash(inside_uid: u32, inside_gid: u32, xattrs: &[Xattr], target: &str) -> Hash {
-    compute_blob_hash(inside_uid, inside_gid, SYMLINK_MODE, xattrs, target.as_bytes())
+pub fn compute_symlink_hash(
+    inside_uid: u32,
+    inside_gid: u32,
+    xattrs: &[Xattr],
+    target: &str,
+) -> Hash {
+    compute_blob_hash(
+        inside_uid,
+        inside_gid,
+        SYMLINK_MODE,
+        xattrs,
+        target.as_bytes(),
+    )
 }
 
 /// compute hash of compressed bytes (for trees and commits)
@@ -207,22 +218,22 @@ mod tests {
 
     #[test]
     fn test_hash_path_components() {
-        let h =
-            Hash::from_hex("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
-                .unwrap();
+        let h = Hash::from_hex("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+            .unwrap();
         let (dir, file) = h.to_path_components();
         assert_eq!(dir, "ab");
-        assert_eq!(file, "cdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+        assert_eq!(
+            file,
+            "cdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
     }
 
     #[test]
     fn test_hash_ordering() {
-        let h1 =
-            Hash::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
-        let h2 =
-            Hash::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap();
+        let h1 = Hash::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
+        let h2 = Hash::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+            .unwrap();
         assert!(h1 < h2);
     }
 
@@ -274,14 +285,8 @@ mod tests {
     #[test]
     fn test_blob_hash_xattr_ordering() {
         // different order should produce same hash
-        let x1 = vec![
-            Xattr::new("user.a", vec![1]),
-            Xattr::new("user.b", vec![2]),
-        ];
-        let x2 = vec![
-            Xattr::new("user.b", vec![2]),
-            Xattr::new("user.a", vec![1]),
-        ];
+        let x1 = vec![Xattr::new("user.a", vec![1]), Xattr::new("user.b", vec![2])];
+        let x2 = vec![Xattr::new("user.b", vec![2]), Xattr::new("user.a", vec![1])];
 
         let h1 = compute_blob_hash(0, 0, 0o644, &x1, b"hello");
         let h2 = compute_blob_hash(0, 0, 0o644, &x2, b"hello");
@@ -326,9 +331,8 @@ mod tests {
 
     #[test]
     fn test_hash_serde_json() {
-        let h =
-            Hash::from_hex("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
-                .unwrap();
+        let h = Hash::from_hex("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+            .unwrap();
         let json = serde_json::to_string(&h).unwrap();
         assert!(json.contains("abcdef"));
         let parsed: Hash = serde_json::from_str(&json).unwrap();

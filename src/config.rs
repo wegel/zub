@@ -105,14 +105,8 @@ mod tests {
     fn test_config_toml_roundtrip() {
         let config = Config {
             namespace: NsConfig {
-                uid_map: vec![
-                    MapEntry::new(0, 1000, 1),
-                    MapEntry::new(1, 100000, 65536),
-                ],
-                gid_map: vec![
-                    MapEntry::new(0, 1000, 1),
-                    MapEntry::new(1, 100000, 65536),
-                ],
+                uid_map: vec![MapEntry::new(0, 1000, 1), MapEntry::new(1, 100000, 65536)],
+                gid_map: vec![MapEntry::new(0, 1000, 1), MapEntry::new(1, 100000, 65536)],
             },
             remotes: vec![
                 Remote::new("origin", "ssh://server/var/zub"),

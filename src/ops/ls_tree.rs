@@ -28,10 +28,7 @@ pub fn ls_tree(repo: &Repo, ref_name: &str, path: Option<&Path>) -> Result<Vec<L
 /// list tree at a specific path
 fn ls_tree_at_path(repo: &Repo, tree: &Tree, path: &Path) -> Result<Vec<LsTreeEntry>> {
     let path_str = path.to_string_lossy();
-    let components: Vec<&str> = path_str
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let components: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
 
     if components.is_empty() {
         return ls_tree_flat(repo, tree, "");

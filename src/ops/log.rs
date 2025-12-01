@@ -180,7 +180,14 @@ mod tests {
         let source = dir.path().join("source");
         fs::create_dir(&source).unwrap();
         fs::write(source.join("file.txt"), "content").unwrap();
-        commit(&repo, &source, "test", Some("test message"), Some("Test Author")).unwrap();
+        commit(
+            &repo,
+            &source,
+            "test",
+            Some("test message"),
+            Some("Test Author"),
+        )
+        .unwrap();
 
         let entries = log(&repo, "test", None).unwrap();
         let display = format!("{}", entries[0]);

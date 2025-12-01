@@ -136,7 +136,10 @@ pub fn read_xattrs(path: &Path) -> Result<Vec<Xattr>> {
                 // skip xattrs we can't read (permission issues, etc.)
                 if e.raw_os_error() != Some(libc::ENODATA) {
                     // log but don't fail for individual xattr read errors
-                    eprintln!("warning: failed to read xattr {} on {:?}: {}", name, path, e);
+                    eprintln!(
+                        "warning: failed to read xattr {} on {:?}: {}",
+                        name, path, e
+                    );
                 }
             }
         }

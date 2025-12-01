@@ -391,7 +391,10 @@ mod tests {
         let hash2 = commit(&src2, &source2, "test", Some("other"), None).unwrap();
 
         // force push should succeed
-        let options = PushOptions { force: true, dry_run: false };
+        let options = PushOptions {
+            force: true,
+            dry_run: false,
+        };
         let result = push_local(&src2, &dst, "test", &options).unwrap();
         assert_eq!(result.hash, hash2);
     }

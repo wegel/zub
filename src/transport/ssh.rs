@@ -106,9 +106,13 @@ impl SshConnection {
         let header = format!("object {} {} {}\n", obj_type, hash, data.len());
         self.send_raw(&header)?;
 
-        let stdin = self.child.stdin.as_mut().ok_or_else(|| crate::Error::Transport {
-            message: "stdin not available".to_string(),
-        })?;
+        let stdin = self
+            .child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| crate::Error::Transport {
+                message: "stdin not available".to_string(),
+            })?;
 
         stdin.write_all(data).map_err(|e| crate::Error::Transport {
             message: format!("failed to write object: {}", e),
@@ -161,15 +165,21 @@ impl SshConnection {
 
     /// receive an object from the remote
     pub fn receive_object(&mut self) -> Result<Option<(String, Hash, Vec<u8>)>> {
-        let stdout = self.child.stdout.as_mut().ok_or_else(|| crate::Error::Transport {
-            message: "stdout not available".to_string(),
-        })?;
+        let stdout = self
+            .child
+            .stdout
+            .as_mut()
+            .ok_or_else(|| crate::Error::Transport {
+                message: "stdout not available".to_string(),
+            })?;
 
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| crate::Error::Transport {
-            message: format!("failed to read: {}", e),
-        })?;
+        reader
+            .read_line(&mut line)
+            .map_err(|e| crate::Error::Transport {
+                message: format!("failed to read: {}", e),
+            })?;
 
         let line = line.trim();
         if line == "end" {
@@ -191,9 +201,11 @@ impl SshConnection {
         })?;
 
         let mut data = vec![0u8; size];
-        reader.read_exact(&mut data).map_err(|e| crate::Error::Transport {
-            message: format!("failed to read object data: {}", e),
-        })?;
+        reader
+            .read_exact(&mut data)
+            .map_err(|e| crate::Error::Transport {
+                message: format!("failed to read object data: {}", e),
+            })?;
 
         Ok(Some((obj_type, hash, data)))
     }
@@ -222,13 +234,19 @@ impl SshConnection {
     }
 
     fn send_raw(&mut self, data: &str) -> Result<()> {
-        let stdin = self.child.stdin.as_mut().ok_or_else(|| crate::Error::Transport {
-            message: "stdin not available".to_string(),
-        })?;
+        let stdin = self
+            .child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| crate::Error::Transport {
+                message: "stdin not available".to_string(),
+            })?;
 
-        stdin.write_all(data.as_bytes()).map_err(|e| crate::Error::Transport {
-            message: format!("failed to write: {}", e),
-        })?;
+        stdin
+            .write_all(data.as_bytes())
+            .map_err(|e| crate::Error::Transport {
+                message: format!("failed to write: {}", e),
+            })?;
 
         stdin.flush().map_err(|e| crate::Error::Transport {
             message: format!("failed to flush: {}", e),
@@ -236,18 +254,24 @@ impl SshConnection {
     }
 
     fn read_response(&mut self) -> Result<String> {
-        let stdout = self.child.stdout.as_mut().ok_or_else(|| crate::Error::Transport {
-            message: "stdout not available".to_string(),
-        })?;
+        let stdout = self
+            .child
+            .stdout
+            .as_mut()
+            .ok_or_else(|| crate::Error::Transport {
+                message: "stdout not available".to_string(),
+            })?;
 
         let mut reader = BufReader::new(stdout);
         let mut response = String::new();
 
         loop {
             let mut line = String::new();
-            let n = reader.read_line(&mut line).map_err(|e| crate::Error::Transport {
-                message: format!("failed to read: {}", e),
-            })?;
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| crate::Error::Transport {
+                    message: format!("failed to read: {}", e),
+                })?;
 
             if n == 0 {
                 break;

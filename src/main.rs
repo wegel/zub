@@ -275,7 +275,13 @@ fn run(cli: Cli) -> zub::Result<()> {
             author,
         } => {
             let repo = Repo::open(&cli.repo)?;
-            let hash = commit(&repo, &source, &ref_name, message.as_deref(), author.as_deref())?;
+            let hash = commit(
+                &repo,
+                &source,
+                &ref_name,
+                message.as_deref(),
+                author.as_deref(),
+            )?;
             println!("{}", hash);
         }
 
@@ -295,7 +301,10 @@ fn run(cli: Cli) -> zub::Result<()> {
             println!("checked out {} to {}", ref_name, destination.display());
         }
 
-        Commands::Log { ref_name, max_count } => {
+        Commands::Log {
+            ref_name,
+            max_count,
+        } => {
             let repo = Repo::open(&cli.repo)?;
             let entries = log(&repo, &ref_name, max_count)?;
 
@@ -489,7 +498,10 @@ fn run(cli: Cli) -> zub::Result<()> {
             let src = Repo::open(&source)?;
             let dst = Repo::open(&cli.repo)?;
 
-            let options = PullOptions { fetch_only, dry_run };
+            let options = PullOptions {
+                fetch_only,
+                dry_run,
+            };
             let result = pull_local(&src, &dst, &ref_name, &options)?;
 
             if dry_run {
@@ -529,16 +541,20 @@ fn run(cli: Cli) -> zub::Result<()> {
             println!("deleted ref {}", ref_name);
         }
 
-        Commands::CatFile { object_type, object } => {
+        Commands::CatFile {
+            object_type,
+            object,
+        } => {
             let repo = Repo::open(&cli.repo)?;
             let hash = Hash::from_hex(&object)?;
 
             match object_type.as_str() {
                 "blob" => {
                     let data = read_blob(&repo, &hash)?;
-                    io::stdout()
-                        .write_all(&data)
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                    io::stdout().write_all(&data).map_err(|e| zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    })?;
                 }
                 "tree" => {
                     let tree = read_tree(&repo, &hash)?;
@@ -658,24 +674,38 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                 let refs = zub::list_refs(&repo)?;
                 for ref_name in refs {
                     let hash = zub::read_ref(&repo, &ref_name)?;
-                    writeln!(stdout, "{} {}", hash, ref_name)
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                    writeln!(stdout, "{} {}", hash, ref_name).map_err(|e| zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    })?;
                 }
-                writeln!(stdout, "end")
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                stdout.flush()
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                writeln!(stdout, "end").map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                stdout.flush().map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
             }
 
             "get-ref" => {
                 match zub::read_ref(&repo, args) {
                     Ok(hash) => writeln!(stdout, "{}", hash),
                     Err(_) => writeln!(stdout, "not-found"),
-                }.map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                writeln!(stdout, "end")
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                stdout.flush()
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                }
+                .map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                writeln!(stdout, "end").map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                stdout.flush().map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
             }
 
             "want-objects" => {
@@ -695,8 +725,16 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                             // check if we need this object
                             let exists = match obj_type {
                                 "blob" => zub::blob_exists(&repo, &hash),
-                                "tree" => repo.trees_path().join(&hash.to_hex()[..2]).join(&hash.to_hex()[2..]).exists(),
-                                "commit" => repo.commits_path().join(&hash.to_hex()[..2]).join(&hash.to_hex()[2..]).exists(),
+                                "tree" => repo
+                                    .trees_path()
+                                    .join(&hash.to_hex()[..2])
+                                    .join(&hash.to_hex()[2..])
+                                    .exists(),
+                                "commit" => repo
+                                    .commits_path()
+                                    .join(&hash.to_hex()[..2])
+                                    .join(&hash.to_hex()[2..])
+                                    .exists(),
                                 _ => false,
                             };
                             if !exists {
@@ -707,13 +745,19 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                 }
                 // output what we need
                 for (obj_type, hash) in needed {
-                    writeln!(stdout, "{} {}", obj_type, hash)
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                    writeln!(stdout, "{} {}", obj_type, hash).map_err(|e| zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    })?;
                 }
-                writeln!(stdout, "end")
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                stdout.flush()
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                writeln!(stdout, "end").map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                stdout.flush().map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
             }
 
             "have-objects" => {
@@ -732,8 +776,16 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                         if let Ok(hash) = Hash::from_hex(obj_parts[1]) {
                             let exists = match obj_type {
                                 "blob" => zub::blob_exists(&repo, &hash),
-                                "tree" => repo.trees_path().join(&hash.to_hex()[..2]).join(&hash.to_hex()[2..]).exists(),
-                                "commit" => repo.commits_path().join(&hash.to_hex()[..2]).join(&hash.to_hex()[2..]).exists(),
+                                "tree" => repo
+                                    .trees_path()
+                                    .join(&hash.to_hex()[..2])
+                                    .join(&hash.to_hex()[2..])
+                                    .exists(),
+                                "commit" => repo
+                                    .commits_path()
+                                    .join(&hash.to_hex()[..2])
+                                    .join(&hash.to_hex()[2..])
+                                    .exists(),
                                 _ => false,
                             };
                             if !exists {
@@ -743,13 +795,19 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                     }
                 }
                 for (obj_type, hash) in missing {
-                    writeln!(stdout, "{} {}", obj_type, hash)
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                    writeln!(stdout, "{} {}", obj_type, hash).map_err(|e| zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    })?;
                 }
-                writeln!(stdout, "end")
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                stdout.flush()
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                writeln!(stdout, "end").map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                stdout.flush().map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
             }
 
             "object" => {
@@ -761,8 +819,10 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                     let size: usize = obj_parts[2].parse().unwrap_or(0);
 
                     let mut data = vec![0u8; size];
-                    reader.read_exact(&mut data)
-                        .map_err(|e| zub::Error::Io { path: "stdin".into(), source: e })?;
+                    reader.read_exact(&mut data).map_err(|e| zub::Error::Io {
+                        path: "stdin".into(),
+                        source: e,
+                    })?;
 
                     // write object to appropriate location
                     let dest = match obj_type {
@@ -779,25 +839,39 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                             repo.commits_path().join(&hex[..2]).join(&hex[2..])
                         }
                         _ => {
-                            writeln!(stdout, "error: unknown object type")
-                                .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                            writeln!(stdout, "error: unknown object type").map_err(|e| {
+                                zub::Error::Io {
+                                    path: "stdout".into(),
+                                    source: e,
+                                }
+                            })?;
                             continue;
                         }
                     };
 
                     if let Some(parent) = dest.parent() {
-                        fs::create_dir_all(parent)
-                            .map_err(|e| zub::Error::Io { path: parent.to_path_buf(), source: e })?;
+                        fs::create_dir_all(parent).map_err(|e| zub::Error::Io {
+                            path: parent.to_path_buf(),
+                            source: e,
+                        })?;
                     }
-                    fs::write(&dest, &data)
-                        .map_err(|e| zub::Error::Io { path: dest.clone(), source: e })?;
+                    fs::write(&dest, &data).map_err(|e| zub::Error::Io {
+                        path: dest.clone(),
+                        source: e,
+                    })?;
 
-                    writeln!(stdout, "ok")
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                    writeln!(stdout, "end")
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                    stdout.flush()
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                    writeln!(stdout, "ok").map_err(|e| zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    })?;
+                    writeln!(stdout, "end").map_err(|e| zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    })?;
+                    stdout.flush().map_err(|e| zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    })?;
                 }
             }
 
@@ -807,20 +881,32 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
                     let ref_name = ref_parts[0];
                     if let Ok(hash) = Hash::from_hex(ref_parts[1]) {
                         zub::write_ref(&repo, ref_name, &hash)?;
-                        writeln!(stdout, "ok")
-                            .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                        writeln!(stdout, "ok").map_err(|e| zub::Error::Io {
+                            path: "stdout".into(),
+                            source: e,
+                        })?;
                     } else {
-                        writeln!(stdout, "error: invalid hash")
-                            .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                        writeln!(stdout, "error: invalid hash").map_err(|e| zub::Error::Io {
+                            path: "stdout".into(),
+                            source: e,
+                        })?;
                     }
                 } else {
-                    writeln!(stdout, "error: invalid update-ref args")
-                        .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                    writeln!(stdout, "error: invalid update-ref args").map_err(|e| {
+                        zub::Error::Io {
+                            path: "stdout".into(),
+                            source: e,
+                        }
+                    })?;
                 }
-                writeln!(stdout, "end")
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                stdout.flush()
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                writeln!(stdout, "end").map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                stdout.flush().map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
             }
 
             "quit" => {
@@ -828,12 +914,20 @@ fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
             }
 
             _ => {
-                writeln!(stdout, "error: unknown command: {}", cmd)
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                writeln!(stdout, "end")
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
-                stdout.flush()
-                    .map_err(|e| zub::Error::Io { path: "stdout".into(), source: e })?;
+                writeln!(stdout, "error: unknown command: {}", cmd).map_err(|e| {
+                    zub::Error::Io {
+                        path: "stdout".into(),
+                        source: e,
+                    }
+                })?;
+                writeln!(stdout, "end").map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                stdout.flush().map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
             }
         }
     }

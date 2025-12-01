@@ -95,10 +95,9 @@ mod tests {
 
     #[test]
     fn test_commit_with_parents() {
-        let parent = Hash::from_hex(
-            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-        )
-        .unwrap();
+        let parent =
+            Hash::from_hex("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+                .unwrap();
         let c = Commit::new(Hash::ZERO, vec![parent], "author", "message");
         assert!(!c.is_root());
         assert!(!c.is_merge());
@@ -106,12 +105,10 @@ mod tests {
 
     #[test]
     fn test_commit_merge() {
-        let p1 =
-            Hash::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
-                .unwrap();
-        let p2 =
-            Hash::from_hex("2222222222222222222222222222222222222222222222222222222222222222")
-                .unwrap();
+        let p1 = Hash::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
+            .unwrap();
+        let p2 = Hash::from_hex("2222222222222222222222222222222222222222222222222222222222222222")
+            .unwrap();
         let c = Commit::new(Hash::ZERO, vec![p1, p2], "author", "merge");
         assert!(c.is_merge());
     }

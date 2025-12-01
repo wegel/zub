@@ -38,10 +38,10 @@ pub fn write_blob(
 
     // convert inside uid/gid to outside values for storage
     let ns = &repo.config().namespace;
-    let outside_uid = inside_to_outside(inside_uid, &ns.uid_map)
-        .ok_or(Error::UnmappedUid(inside_uid))?;
-    let outside_gid = inside_to_outside(inside_gid, &ns.gid_map)
-        .ok_or(Error::UnmappedGid(inside_gid))?;
+    let outside_uid =
+        inside_to_outside(inside_uid, &ns.uid_map).ok_or(Error::UnmappedUid(inside_uid))?;
+    let outside_gid =
+        inside_to_outside(inside_gid, &ns.gid_map).ok_or(Error::UnmappedGid(inside_gid))?;
 
     // ensure directory exists
     fs::create_dir_all(&blob_dir).with_path(&blob_dir)?;
@@ -63,11 +63,15 @@ pub fn write_blob(
     let current_uid = nix::unistd::getuid().as_raw();
     let current_gid = nix::unistd::getgid().as_raw();
     if outside_uid != current_uid || outside_gid != current_gid {
-        nix::unistd::chown(&tmp_path, Some(Uid::from_raw(outside_uid)), Some(Gid::from_raw(outside_gid)))
-            .map_err(|e| Error::Io {
-                path: tmp_path.clone(),
-                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, e),
-            })?;
+        nix::unistd::chown(
+            &tmp_path,
+            Some(Uid::from_raw(outside_uid)),
+            Some(Gid::from_raw(outside_gid)),
+        )
+        .map_err(|e| Error::Io {
+            path: tmp_path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, e),
+        })?;
     }
 
     // set xattrs
@@ -239,7 +243,10 @@ mod tests {
     }
 
     fn current_ids() -> (u32, u32) {
-        (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw())
+        (
+            nix::unistd::getuid().as_raw(),
+            nix::unistd::getgid().as_raw(),
+        )
     }
 
     #[test]

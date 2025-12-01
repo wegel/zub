@@ -11,13 +11,25 @@ use crate::error::{Error, IoResultExt, Result};
 use crate::types::Xattr;
 
 /// create a directory with specified metadata
-pub fn create_directory(path: &Path, uid: u32, gid: u32, mode: u32, xattrs: &[Xattr]) -> Result<()> {
+pub fn create_directory(
+    path: &Path,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    xattrs: &[Xattr],
+) -> Result<()> {
     fs::create_dir_all(path).with_path(path)?;
     apply_metadata(path, uid, gid, mode, xattrs)
 }
 
 /// create a symlink
-pub fn create_symlink(path: &Path, target: &str, uid: u32, gid: u32, xattrs: &[Xattr]) -> Result<()> {
+pub fn create_symlink(
+    path: &Path,
+    target: &str,
+    uid: u32,
+    gid: u32,
+    xattrs: &[Xattr],
+) -> Result<()> {
     // remove existing if present
     if path.exists() || path.symlink_metadata().is_ok() {
         fs::remove_file(path).with_path(path)?;
@@ -30,11 +42,10 @@ pub fn create_symlink(path: &Path, target: &str, uid: u32, gid: u32, xattrs: &[X
     let current_uid = nix::unistd::getuid().as_raw();
     let current_gid = nix::unistd::getgid().as_raw();
     if uid != current_uid || gid != current_gid {
-        let c_path = CString::new(path.as_os_str().as_encoded_bytes())
-            .map_err(|_| Error::Io {
-                path: path.to_path_buf(),
-                source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"),
-            })?;
+        let c_path = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| Error::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"),
+        })?;
         let ret = unsafe { libc::lchown(c_path.as_ptr(), uid, gid) };
         if ret != 0 {
             return Err(Error::Io {
@@ -236,7 +247,10 @@ mod tests {
     use tempfile::tempdir;
 
     fn current_ids() -> (u32, u32) {
-        (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw())
+        (
+            nix::unistd::getuid().as_raw(),
+            nix::unistd::getgid().as_raw(),
+        )
     }
 
     #[test]

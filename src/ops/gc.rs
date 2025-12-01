@@ -92,7 +92,13 @@ fn mark_commit(
 
     // recurse into parents
     for parent in &commit.parents {
-        mark_commit(repo, parent, reachable_blobs, reachable_trees, reachable_commits)?;
+        mark_commit(
+            repo,
+            parent,
+            reachable_blobs,
+            reachable_trees,
+            reachable_commits,
+        )?;
     }
 
     Ok(())
@@ -146,9 +152,9 @@ fn sweep_objects(
     for entry in WalkDir::new(dir).min_depth(2).max_depth(2) {
         let entry = entry.map_err(|e| crate::Error::Io {
             path: dir.to_path_buf(),
-            source: e.into_io_error().unwrap_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")
-            }),
+            source: e
+                .into_io_error()
+                .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")),
         })?;
 
         if !entry.file_type().is_file() {

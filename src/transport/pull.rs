@@ -264,7 +264,10 @@ mod tests {
         fs::write(source.join("file.txt"), "content").unwrap();
         let hash = commit(&src, &source, "test", Some("initial"), None).unwrap();
 
-        let options = PullOptions { fetch_only: true, dry_run: false };
+        let options = PullOptions {
+            fetch_only: true,
+            dry_run: false,
+        };
         let result = pull_local(&src, &dst, "test", &options).unwrap();
 
         assert_eq!(result.hash, hash);

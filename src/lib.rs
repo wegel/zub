@@ -56,8 +56,8 @@ pub use object::{
     blob_exists, commit_path, read_blob, read_commit, read_tree, tree_path, write_blob,
     write_commit, write_tree,
 };
-pub use refs::{delete_ref, list_refs, list_refs_matching, read_ref, ref_exists, resolve_ref, write_ref};
-pub use repo::Repo;
-pub use types::{
-    ChangeKind, Commit, DiffEntry, EntryKind, SparseRegion, Tree, TreeEntry, Xattr,
+pub use refs::{
+    delete_ref, list_refs, list_refs_matching, read_ref, ref_exists, resolve_ref, write_ref,
 };
+pub use repo::Repo;
+pub use types::{ChangeKind, Commit, DiffEntry, EntryKind, SparseRegion, Tree, TreeEntry, Xattr};

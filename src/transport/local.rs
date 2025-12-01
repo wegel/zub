@@ -88,9 +88,9 @@ fn list_objects_in_dir(dir: &Path) -> Result<Vec<Hash>> {
     for entry in WalkDir::new(dir).min_depth(2).max_depth(2) {
         let entry = entry.map_err(|e| crate::Error::Io {
             path: dir.to_path_buf(),
-            source: e.into_io_error().unwrap_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")
-            }),
+            source: e
+                .into_io_error()
+                .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")),
         })?;
 
         if !entry.file_type().is_file() {

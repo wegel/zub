@@ -89,8 +89,20 @@ fn diff_tree_contents(repo: &Repo, t1: &Tree, t2: &Tree, prefix: &str) -> Result
 
                 match (&e1.kind, &e2.kind) {
                     (
-                        EntryKind::Directory { hash: h1, uid: u1, gid: g1, mode: m1, xattrs: x1 },
-                        EntryKind::Directory { hash: h2, uid: u2, gid: g2, mode: m2, xattrs: x2 },
+                        EntryKind::Directory {
+                            hash: h1,
+                            uid: u1,
+                            gid: g1,
+                            mode: m1,
+                            xattrs: x1,
+                        },
+                        EntryKind::Directory {
+                            hash: h2,
+                            uid: u2,
+                            gid: g2,
+                            mode: m2,
+                            xattrs: x2,
+                        },
                     ) => {
                         // both directories - recurse
                         if h1 != h2 {
@@ -293,8 +305,14 @@ mod tests {
         let changes = diff(&repo, "ref1", "ref2").unwrap();
 
         // should report the directory and its contents
-        assert!(changes.iter().any(|c| c.path == "newdir" && c.kind == ChangeKind::Added));
-        assert!(changes.iter().any(|c| c.path == "newdir/a.txt" && c.kind == ChangeKind::Added));
-        assert!(changes.iter().any(|c| c.path == "newdir/b.txt" && c.kind == ChangeKind::Added));
+        assert!(changes
+            .iter()
+            .any(|c| c.path == "newdir" && c.kind == ChangeKind::Added));
+        assert!(changes
+            .iter()
+            .any(|c| c.path == "newdir/a.txt" && c.kind == ChangeKind::Added));
+        assert!(changes
+            .iter()
+            .any(|c| c.path == "newdir/b.txt" && c.kind == ChangeKind::Added));
     }
 }
