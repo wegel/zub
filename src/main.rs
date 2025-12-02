@@ -153,6 +153,23 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// show repository statistics
+    Stats,
+
+    /// show disk usage per ref
+    Du {
+        /// number of top refs to show (default: 20)
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// truncate history, keeping only latest commit per ref
+    TruncateHistory {
+        /// only show what would be done
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// remap blob ownership to current user namespace
     Remap {
         /// skip blobs that can't be remapped instead of erroring
@@ -441,6 +458,68 @@ fn run(cli: Cli) -> zub::Result<()> {
                 action, stats.blobs_removed, stats.trees_removed, stats.commits_removed
             );
             println!("freed {} bytes", stats.bytes_freed);
+        }
+
+        Commands::Stats => {
+            let repo = Repo::open(&cli.repo)?;
+            let s = zub::stats(&repo)?;
+
+            println!("refs: {}", s.total_refs);
+            println!();
+            println!("objects:");
+            println!(
+                "  blobs:   {:>8} total, {:>8} reachable ({:.1} MB on disk)",
+                s.total_blobs,
+                s.reachable_blobs,
+                s.total_blobs_bytes as f64 / 1_000_000.0
+            );
+            println!(
+                "  trees:   {:>8} total, {:>8} reachable ({:.1} MB on disk)",
+                s.total_trees,
+                s.reachable_trees,
+                s.total_trees_bytes as f64 / 1_000_000.0
+            );
+            println!(
+                "  commits: {:>8} total, {:>8} reachable ({:.1} MB on disk)",
+                s.total_commits,
+                s.reachable_commits,
+                s.total_commits_bytes as f64 / 1_000_000.0
+            );
+            println!();
+            if s.unreachable_blobs_bytes > 0 {
+                println!(
+                    "unreachable blob data: {:.1} MB (run gc to free)",
+                    s.unreachable_blobs_bytes as f64 / 1_000_000.0
+                );
+            }
+        }
+
+        Commands::Du { limit } => {
+            let repo = Repo::open(&cli.repo)?;
+            let sizes = zub::du(&repo)?;
+
+            for entry in sizes.iter().take(limit) {
+                let mb = entry.bytes as f64 / 1_000_000.0;
+                println!("{:>10.1} MB  {}", mb, entry.ref_name);
+            }
+
+            if sizes.len() > limit {
+                println!("... and {} more refs", sizes.len() - limit);
+            }
+        }
+
+        Commands::TruncateHistory { dry_run } => {
+            let repo = Repo::open(&cli.repo)?;
+            let stats = zub::truncate_history(&repo, dry_run)?;
+
+            let action = if dry_run { "would truncate" } else { "truncated" };
+            println!(
+                "{} {}/{} refs",
+                action, stats.refs_truncated, stats.refs_processed
+            );
+            if !dry_run && stats.refs_truncated > 0 {
+                println!("run gc to free unreachable objects");
+            }
         }
 
         Commands::Remap { force, dry_run } => {

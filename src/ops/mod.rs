@@ -9,6 +9,8 @@ mod gc;
 mod log;
 mod ls_tree;
 mod map;
+mod stats;
+mod truncate;
 mod union;
 mod union_checkout;
 
@@ -21,5 +23,7 @@ pub use gc::{gc, GcStats};
 pub use log::{log, LogEntry};
 pub use ls_tree::{ls_tree, ls_tree_recursive, LsTreeEntry};
 pub use map::{map, MapOptions, MapStats};
+pub use stats::{du, stats, RefSize, RepoStats};
+pub use truncate::{truncate_history, TruncateStats};
 pub use union::{union as union_trees, ConflictResolution, UnionOptions};
 pub use union_checkout::{checkout_union as union_checkout, UnionCheckoutOptions};
