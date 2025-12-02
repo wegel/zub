@@ -220,15 +220,9 @@ pub fn du(repo: &Repo, pattern: Option<&str>) -> Result<Vec<RefSize>> {
         collect_tree_blobs(repo, &commit.tree, &mut blobs)?;
 
         // sum up sizes
-        let bytes: u64 = blobs
-            .iter()
-            .filter_map(|h| blob_sizes.get(h))
-            .sum();
+        let bytes: u64 = blobs.iter().filter_map(|h| blob_sizes.get(h)).sum();
 
-        results.push(RefSize {
-            ref_name,
-            bytes,
-        });
+        results.push(RefSize { ref_name, bytes });
     }
 
     // sort by size descending

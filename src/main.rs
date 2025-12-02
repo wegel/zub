@@ -535,7 +535,11 @@ fn run(cli: Cli) -> zub::Result<()> {
             let repo = Repo::open(&repo_path)?;
             let stats = zub::truncate_history(&repo, dry_run)?;
 
-            let action = if dry_run { "would truncate" } else { "truncated" };
+            let action = if dry_run {
+                "would truncate"
+            } else {
+                "truncated"
+            };
             println!(
                 "{} {}/{} refs",
                 action, stats.refs_truncated, stats.refs_processed
