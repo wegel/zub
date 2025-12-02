@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 use crate::error::Result;
 use crate::hash::Hash;
 use crate::object::{read_commit, read_tree};
-use crate::refs::{list_refs, read_ref};
+use crate::refs::{list_refs, list_refs_matching, read_ref};
 use crate::repo::Repo;
 use crate::types::EntryKind;
 
@@ -199,13 +199,19 @@ pub struct RefSize {
 }
 
 /// calculate size per ref (disk usage)
-pub fn du(repo: &Repo) -> Result<Vec<RefSize>> {
+/// optionally filter refs by glob pattern
+pub fn du(repo: &Repo, pattern: Option<&str>) -> Result<Vec<RefSize>> {
     // first build a map of blob hash -> size on disk
     let blob_sizes = build_blob_size_map(repo)?;
 
     let mut results = Vec::new();
 
-    for ref_name in list_refs(repo)? {
+    let refs = match pattern {
+        Some(p) => list_refs_matching(repo, p)?,
+        None => list_refs(repo)?,
+    };
+
+    for ref_name in refs {
         let commit_hash = read_ref(repo, &ref_name)?;
         let commit = read_commit(repo, &commit_hash)?;
 

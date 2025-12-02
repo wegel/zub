@@ -20,12 +20,30 @@ use zub::{read_blob, read_commit, read_tree, Hash, Repo};
 #[command(about = "git-like object tree - content-addressed filesystem store")]
 #[command(version)]
 struct Cli {
-    /// repository path
-    #[arg(short, long, default_value = ".")]
-    repo: PathBuf,
+    /// repository path (default: .zub symlink target, or current directory)
+    #[arg(short, long)]
+    repo: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
+}
+
+/// resolve the repository path from CLI arg or .zub symlink
+fn resolve_repo_path(repo_arg: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = repo_arg {
+        return path;
+    }
+
+    // check for .zub symlink in current directory
+    let zub_link = Path::new(".zub");
+    if zub_link.is_symlink() {
+        if let Ok(target) = std::fs::read_link(zub_link) {
+            return target;
+        }
+    }
+
+    // default to current directory
+    PathBuf::from(".")
 }
 
 #[derive(Subcommand)]
@@ -158,6 +176,9 @@ enum Commands {
 
     /// show disk usage per ref
     Du {
+        /// optional glob pattern to filter refs (e.g. "x86_64/pkg/*/neovim/*")
+        pattern: Option<String>,
+
         /// number of top refs to show (default: 20)
         #[arg(short, long, default_value = "20")]
         limit: usize,
@@ -285,6 +306,8 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> zub::Result<()> {
+    let repo_path = resolve_repo_path(cli.repo);
+
     match cli.command {
         Commands::Init { path } => {
             Repo::init(&path)?;
@@ -297,7 +320,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             message,
             author,
         } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let hash = commit(
                 &repo,
                 &source,
@@ -314,7 +337,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             copy,
             sparse,
         } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let options = CheckoutOptions {
                 force: false,
                 hardlink: !copy,
@@ -328,7 +351,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             ref_name,
             max_count,
         } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let entries = log(&repo, &ref_name, max_count)?;
 
             for entry in entries {
@@ -341,7 +364,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             path,
             recursive,
         } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
 
             let entries = if recursive {
                 ls_tree_recursive(&repo, &ref_name)?
@@ -355,7 +378,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::Diff { ref1, ref2 } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let changes = diff(&repo, &ref1, &ref2)?;
 
             for change in changes {
@@ -375,7 +398,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             on_conflict,
             message,
         } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let resolution = parse_conflict_resolution(&on_conflict)?;
             let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
 
@@ -394,7 +417,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             on_conflict,
             copy,
         } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let resolution = parse_conflict_resolution(&on_conflict)?;
             let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
 
@@ -412,7 +435,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::Fsck => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let report = fsck(&repo)?;
 
             println!("objects checked: {}", report.objects_checked);
@@ -449,7 +472,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::Gc { dry_run } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let stats = gc(&repo, dry_run)?;
 
             let action = if dry_run { "would remove" } else { "removed" };
@@ -461,7 +484,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::Stats => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let s = zub::stats(&repo)?;
 
             println!("refs: {}", s.total_refs);
@@ -494,9 +517,9 @@ fn run(cli: Cli) -> zub::Result<()> {
             }
         }
 
-        Commands::Du { limit } => {
-            let repo = Repo::open(&cli.repo)?;
-            let sizes = zub::du(&repo)?;
+        Commands::Du { pattern, limit } => {
+            let repo = Repo::open(&repo_path)?;
+            let sizes = zub::du(&repo, pattern.as_deref())?;
 
             for entry in sizes.iter().take(limit) {
                 let mb = entry.bytes as f64 / 1_000_000.0;
@@ -509,7 +532,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::TruncateHistory { dry_run } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let stats = zub::truncate_history(&repo, dry_run)?;
 
             let action = if dry_run { "would truncate" } else { "truncated" };
@@ -523,7 +546,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::Remap { force, dry_run } => {
-            let mut repo = Repo::open(&cli.repo)?;
+            let mut repo = Repo::open(&repo_path)?;
             let options = MapOptions { force, dry_run };
             let stats = map(&mut repo, &options)?;
 
@@ -553,7 +576,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             force,
             dry_run,
         } => {
-            let src = Repo::open(&cli.repo)?;
+            let src = Repo::open(&repo_path)?;
             let dst = Repo::open(&destination)?;
 
             let options = PushOptions { force, dry_run };
@@ -581,7 +604,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             dry_run,
         } => {
             let src = Repo::open(&source)?;
-            let dst = Repo::open(&cli.repo)?;
+            let dst = Repo::open(&repo_path)?;
 
             let options = PullOptions {
                 fetch_only,
@@ -605,7 +628,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::Refs => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let refs = zub::list_refs(&repo)?;
 
             for ref_name in refs {
@@ -615,19 +638,19 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::ShowRef { ref_name } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let hash = zub::resolve_ref(&repo, &ref_name)?;
             println!("{}", hash);
         }
 
         Commands::DeleteRef { ref_name } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             zub::delete_ref(&repo, &ref_name)?;
             println!("deleted ref {}", ref_name);
         }
 
         Commands::DeleteRefs { pattern } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let deleted = zub::delete_refs_matching(&repo, &pattern)?;
             if deleted.is_empty() {
                 println!("no refs matched pattern {}", pattern);
@@ -642,7 +665,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             object_type,
             object,
         } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let hash = Hash::from_hex(&object)?;
 
             match object_type.as_str() {
@@ -677,7 +700,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::RevParse { rev, short } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let hash = zub::resolve_ref(&repo, &rev)?;
             if short {
                 println!("{}", &hash.to_hex()[..12]);
@@ -687,7 +710,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         }
 
         Commands::Show { rev, metadata_key } => {
-            let repo = Repo::open(&cli.repo)?;
+            let repo = Repo::open(&repo_path)?;
             let hash = zub::resolve_ref(&repo, &rev)?;
             let commit = read_commit(&repo, &hash)?;
 
