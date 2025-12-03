@@ -20,26 +20,32 @@ use zub::{read_blob, read_commit, read_tree, Hash, Repo};
 #[command(about = "git-like object tree - content-addressed filesystem store")]
 #[command(version)]
 struct Cli {
-    /// repository path (default: .zub symlink target, or current directory)
-    #[arg(short, long)]
+    /// repository path (default: ZUB_REPO env, .zub symlink/dir, or current directory)
+    #[arg(short, long, env = "ZUB_REPO")]
     repo: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
 }
 
-/// resolve the repository path from CLI arg or .zub symlink
+/// resolve the repository path from CLI arg, .zub symlink, or .zub directory
 fn resolve_repo_path(repo_arg: Option<PathBuf>) -> PathBuf {
     if let Some(path) = repo_arg {
         return path;
     }
 
-    // check for .zub symlink in current directory
-    let zub_link = Path::new(".zub");
-    if zub_link.is_symlink() {
-        if let Ok(target) = std::fs::read_link(zub_link) {
+    let zub_path = Path::new(".zub");
+
+    // check for .zub symlink
+    if zub_path.is_symlink() {
+        if let Ok(target) = std::fs::read_link(zub_path) {
             return target;
         }
+    }
+
+    // check for .zub directory
+    if zub_path.is_dir() {
+        return zub_path.to_path_buf();
     }
 
     // default to current directory
