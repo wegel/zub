@@ -68,27 +68,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zub"
-version = "0.1.0"
-dependencies = [
- "ciborium",
- "clap",
- "glob",
- "hex",
- "nix",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "toml",
- "uuid",
- "walkdir",
- "xattr",
- "zstd",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -813,4 +792,25 @@ checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
 dependencies = [
  "cc",
  "pkg-config",
+]
+
+[[package]]
+name = "zub"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "clap",
+ "glob",
+ "hex",
+ "nix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "uuid",
+ "walkdir",
+ "xattr",
+ "zstd",
 ]
