@@ -17,7 +17,11 @@ Similar to [ostree's bare repo mode](https://ostreedev.github.io/ostree/repo/), 
 
 ## build
 
-```
+```sh
+# static binary via container (no dependencies needed)
+make build
+
+# or locally
 cargo build --release
 ```
 
