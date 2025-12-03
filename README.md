@@ -27,8 +27,10 @@ cargo build --release
 # init a repo
 zub init /path/to/repo
 
-# optionally, create a .zub symlink to avoid -r on every command
+# repo is auto-detected from ZUB_REPO env or .zub symlink/dir
 ln -s /path/to/repo .zub
+# or
+zub init .zub
 
 # commit a directory tree
 zub commit /some/dir my-ref -m "initial"
@@ -45,9 +47,9 @@ zub diff ref-a ref-b
 # merge multiple refs (last-wins on conflict)
 zub union ref-a ref-b ref-c merged-ref --on-conflict last
 
-# sync between repos
+# sync between repos (local or SSH)
 zub push /other/repo my-ref
-zub pull user@host:/remote/repo some-ref
+zub pull user@host:/remote/repo some-ref  # requires zub on remote
 ```
 
 ## commands
@@ -61,7 +63,7 @@ zub pull user@host:/remote/repo some-ref
 | `diff` | compare two refs |
 | `ls-tree` | list tree contents |
 | `union` | merge multiple refs |
-| `push` / `pull` | sync refs between repositories |
+| `push` / `pull` | sync refs between repositories (local or SSH) |
 | `gc` | garbage collect unreachable objects |
 | `fsck` | verify repository integrity |
 | `remap` | translate blob ownership across namespaces |
