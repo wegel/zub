@@ -49,7 +49,7 @@ zub union ref-a ref-b ref-c merged-ref --on-conflict last
 
 # sync between repos (local or SSH)
 zub push /other/repo my-ref
-zub pull user@host:/remote/repo some-ref  # requires zub on remote
+zub pull user@host:/remote/repo some-ref  # auto-deploys zub if needed
 ```
 
 ## commands

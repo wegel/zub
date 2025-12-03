@@ -4,7 +4,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 use crate::error::Result;
 use crate::hash::Hash;
@@ -12,38 +12,21 @@ use crate::transport::local::ObjectSet;
 
 /// SSH connection to a remote repository
 pub struct SshConnection {
-    child: Child,
+    child: std::process::Child,
 }
 
 impl SshConnection {
     /// connect to a remote repository via SSH
     pub fn connect(remote: &str, repo_path: &Path) -> Result<Self> {
         // parse remote in format user@host or just host
-        let (host, user) = if remote.contains('@') {
-            let parts: Vec<&str> = remote.splitn(2, '@').collect();
-            (parts[1].to_string(), Some(parts[0].to_string()))
-        } else {
-            (remote.to_string(), None)
-        };
+        let (host, user) = parse_remote(remote);
 
-        let mut cmd = Command::new("ssh");
-
-        if let Some(user) = user {
-            cmd.arg("-l").arg(user);
+        // first, check if zub exists on the remote
+        if !check_remote_zub(&host, user.as_deref())? {
+            deploy_zub_to_remote(&host, user.as_deref())?;
         }
 
-        cmd.arg(&host);
-        cmd.arg("zub-remote");
-        cmd.arg(repo_path);
-
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::inherit());
-
-        let child = cmd.spawn().map_err(|e| crate::Error::Transport {
-            message: format!("failed to spawn ssh: {}", e),
-        })?;
-
+        let child = spawn_remote(&host, user.as_deref(), repo_path)?;
         Ok(Self { child })
     }
 
@@ -309,6 +292,155 @@ impl Drop for SshConnection {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
+}
+
+fn parse_remote(remote: &str) -> (String, Option<String>) {
+    if remote.contains('@') {
+        let parts: Vec<&str> = remote.splitn(2, '@').collect();
+        (parts[1].to_string(), Some(parts[0].to_string()))
+    } else {
+        (remote.to_string(), None)
+    }
+}
+
+// deployed binary path: use $TMPDIR if set, otherwise ~/.cache
+const REMOTE_ZUB_PATH: &str = "${TMPDIR:-$HOME/.cache}/zub_auto_deployed";
+
+fn check_remote_zub(host: &str, user: Option<&str>) -> Result<bool> {
+    let mut cmd = Command::new("ssh");
+    if let Some(u) = user {
+        cmd.arg("-l").arg(u);
+    }
+    cmd.arg(host);
+    // check both PATH and our deploy location
+    cmd.arg(format!(
+        "command -v zub >/dev/null 2>&1 || test -x {}",
+        REMOTE_ZUB_PATH
+    ));
+
+    let status = cmd.status().map_err(|e| crate::Error::Transport {
+        message: format!("failed to check remote zub: {}", e),
+    })?;
+
+    Ok(status.success())
+}
+
+fn deploy_zub_to_remote(host: &str, user: Option<&str>) -> Result<()> {
+    // TODO: this assumes the remote has the same architecture as the local machine.
+    // in the future, we could detect the remote arch and either:
+    // - download the correct binary from a release
+    // - refuse with a helpful error message
+    let local_exe = std::env::current_exe().map_err(|e| crate::Error::Transport {
+        message: format!("failed to get current executable path: {}", e),
+    })?;
+
+    // get the resolved remote path
+    let resolved_path = get_resolved_remote_path(host, user)?;
+
+    let remote_target = if let Some(u) = user {
+        format!("{}@{}:{}", u, host, resolved_path)
+    } else {
+        format!("{}:{}", host, resolved_path)
+    };
+
+    // ensure parent directory exists on remote
+    let mut mkdir_cmd = Command::new("ssh");
+    if let Some(u) = user {
+        mkdir_cmd.arg("-l").arg(u);
+    }
+    mkdir_cmd.arg(host);
+    mkdir_cmd.arg(format!("mkdir -p \"$(dirname {})\"", REMOTE_ZUB_PATH));
+
+    let status = mkdir_cmd.status().map_err(|e| crate::Error::Transport {
+        message: format!("failed to create remote directory: {}", e),
+    })?;
+
+    if !status.success() {
+        return Err(crate::Error::Transport {
+            message: "failed to create directory on remote".to_string(),
+        });
+    }
+
+    // copy the binary
+    let status = Command::new("scp")
+        .arg(&local_exe)
+        .arg(&remote_target)
+        .status()
+        .map_err(|e| crate::Error::Transport {
+            message: format!("failed to copy zub to remote: {}", e),
+        })?;
+
+    if !status.success() {
+        return Err(crate::Error::Transport {
+            message: "failed to copy zub binary to remote".to_string(),
+        });
+    }
+
+    // make it executable
+    let mut chmod_cmd = Command::new("ssh");
+    if let Some(u) = user {
+        chmod_cmd.arg("-l").arg(u);
+    }
+    chmod_cmd.arg(host);
+    chmod_cmd.arg(format!("chmod +x {}", REMOTE_ZUB_PATH));
+
+    let status = chmod_cmd.status().map_err(|e| crate::Error::Transport {
+        message: format!("failed to chmod zub on remote: {}", e),
+    })?;
+
+    if !status.success() {
+        return Err(crate::Error::Transport {
+            message: "failed to make zub executable on remote".to_string(),
+        });
+    }
+
+    eprintln!("deployed zub to remote {}", resolved_path);
+    Ok(())
+}
+
+fn get_resolved_remote_path(host: &str, user: Option<&str>) -> Result<String> {
+    let mut cmd = Command::new("ssh");
+    if let Some(u) = user {
+        cmd.arg("-l").arg(u);
+    }
+    cmd.arg(host);
+    cmd.arg(format!("echo {}", REMOTE_ZUB_PATH));
+
+    let output = cmd.output().map_err(|e| crate::Error::Transport {
+        message: format!("failed to resolve remote path: {}", e),
+    })?;
+
+    if !output.status.success() {
+        return Err(crate::Error::Transport {
+            message: "failed to resolve remote path".to_string(),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn spawn_remote(host: &str, user: Option<&str>, repo_path: &Path) -> Result<std::process::Child> {
+    let mut cmd = Command::new("ssh");
+
+    if let Some(u) = user {
+        cmd.arg("-l").arg(u);
+    }
+
+    cmd.arg(host);
+    // try zub in PATH first, fall back to deployed location
+    cmd.arg(format!(
+        "$(command -v zub || echo {}) zub-remote {}",
+        REMOTE_ZUB_PATH,
+        repo_path.display()
+    ));
+
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::inherit());
+
+    cmd.spawn().map_err(|e| crate::Error::Transport {
+        message: format!("failed to spawn ssh: {}", e),
+    })
 }
 
 // note: SSH transport tests require a remote server, so they're integration tests
