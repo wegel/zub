@@ -1,5 +1,8 @@
 # zub
 
+[![Crates.io](https://img.shields.io/crates/v/zub-store.svg)](https://crates.io/crates/zub-store)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A git-like content-addressed store for filesystem trees.
 
 ## what it is
@@ -14,6 +17,12 @@ Similar to [ostree's bare repo mode](https://ostreedev.github.io/ostree/repo/), 
 - supports user namespace remapping (rootless containers)
 - union merging for layer composition
 - efficient deduplication via content-addressing
+
+## install
+
+```sh
+cargo install zub-store
+```
 
 ## build
 
