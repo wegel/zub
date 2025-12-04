@@ -1,7 +1,8 @@
 //! pull operation - fetch objects from remote
 
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, Permissions};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use crate::error::{IoResultExt, Result};
@@ -103,7 +104,7 @@ pub fn pull_ssh(
     // receive objects
     let mut stats = TransferStats::default();
 
-    while let Some((obj_type, hash, data)) = conn.receive_object()? {
+    while let Some((obj_type, hash, data, mode)) = conn.receive_object()? {
         let path = match obj_type.as_str() {
             "blob" => object_path(&local.blobs_path(), &hash),
             "tree" => object_path(&local.trees_path(), &hash),
@@ -117,6 +118,10 @@ pub fn pull_ssh(
             }
             stats.bytes_transferred += data.len() as u64;
             fs::write(&path, &data).with_path(&path)?;
+            // restore file permissions for blobs
+            if obj_type == "blob" && mode != 0 {
+                fs::set_permissions(&path, Permissions::from_mode(mode)).with_path(&path)?;
+            }
             stats.copied += 1;
         } else {
             stats.skipped += 1;

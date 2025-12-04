@@ -4,7 +4,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::error::Result;
 use crate::hash::Hash;
@@ -12,7 +12,9 @@ use crate::transport::local::ObjectSet;
 
 /// SSH connection to a remote repository
 pub struct SshConnection {
-    child: std::process::Child,
+    child: Child,
+    reader: BufReader<ChildStdout>,
+    writer: ChildStdin,
 }
 
 impl SshConnection {
@@ -26,8 +28,20 @@ impl SshConnection {
             deploy_zub_to_remote(&host, user.as_deref())?;
         }
 
-        let child = spawn_remote(&host, user.as_deref(), repo_path)?;
-        Ok(Self { child })
+        let mut child = spawn_remote(&host, user.as_deref(), repo_path)?;
+
+        let stdout = child.stdout.take().ok_or_else(|| crate::Error::Transport {
+            message: "stdout not available".to_string(),
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| crate::Error::Transport {
+            message: "stdin not available".to_string(),
+        })?;
+
+        Ok(Self {
+            child,
+            reader: BufReader::new(stdout),
+            writer: stdin,
+        })
     }
 
     /// list refs on the remote
@@ -89,15 +103,7 @@ impl SshConnection {
         let header = format!("object {} {} {}\n", obj_type, hash, data.len());
         self.send_raw(&header)?;
 
-        let stdin = self
-            .child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| crate::Error::Transport {
-                message: "stdin not available".to_string(),
-            })?;
-
-        stdin.write_all(data).map_err(|e| crate::Error::Transport {
+        self.writer.write_all(data).map_err(|e| crate::Error::Transport {
             message: format!("failed to write object: {}", e),
         })?;
 
@@ -147,18 +153,10 @@ impl SshConnection {
     }
 
     /// receive an object from the remote
-    pub fn receive_object(&mut self) -> Result<Option<(String, Hash, Vec<u8>)>> {
-        let stdout = self
-            .child
-            .stdout
-            .as_mut()
-            .ok_or_else(|| crate::Error::Transport {
-                message: "stdout not available".to_string(),
-            })?;
-
-        let mut reader = BufReader::new(stdout);
+    /// returns (type, hash, data, mode) where mode is file permissions for blobs
+    pub fn receive_object(&mut self) -> Result<Option<(String, Hash, Vec<u8>, u32)>> {
         let mut line = String::new();
-        reader
+        self.reader
             .read_line(&mut line)
             .map_err(|e| crate::Error::Transport {
                 message: format!("failed to read: {}", e),
@@ -169,9 +167,9 @@ impl SshConnection {
             return Ok(None);
         }
 
-        // parse "object TYPE HASH SIZE"
-        let parts: Vec<&str> = line.splitn(4, ' ').collect();
-        if parts.len() != 4 || parts[0] != "object" {
+        // parse "object TYPE HASH SIZE MODE"
+        let parts: Vec<&str> = line.splitn(5, ' ').collect();
+        if parts.len() < 4 || parts[0] != "object" {
             return Err(crate::Error::Transport {
                 message: format!("unexpected response: {}", line),
             });
@@ -182,15 +180,20 @@ impl SshConnection {
         let size: usize = parts[3].parse().map_err(|_| crate::Error::Transport {
             message: format!("invalid size: {}", parts[3]),
         })?;
+        // mode is optional for backwards compat, default to 0644
+        let mode: u32 = parts
+            .get(4)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0o644);
 
         let mut data = vec![0u8; size];
-        reader
+        self.reader
             .read_exact(&mut data)
             .map_err(|e| crate::Error::Transport {
                 message: format!("failed to read object data: {}", e),
             })?;
 
-        Ok(Some((obj_type, hash, data)))
+        Ok(Some((obj_type, hash, data, mode)))
     }
 
     /// request ref value from remote
@@ -217,40 +220,24 @@ impl SshConnection {
     }
 
     fn send_raw(&mut self, data: &str) -> Result<()> {
-        let stdin = self
-            .child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| crate::Error::Transport {
-                message: "stdin not available".to_string(),
-            })?;
-
-        stdin
+        self.writer
             .write_all(data.as_bytes())
             .map_err(|e| crate::Error::Transport {
                 message: format!("failed to write: {}", e),
             })?;
 
-        stdin.flush().map_err(|e| crate::Error::Transport {
+        self.writer.flush().map_err(|e| crate::Error::Transport {
             message: format!("failed to flush: {}", e),
         })
     }
 
     fn read_response(&mut self) -> Result<String> {
-        let stdout = self
-            .child
-            .stdout
-            .as_mut()
-            .ok_or_else(|| crate::Error::Transport {
-                message: "stdout not available".to_string(),
-            })?;
-
-        let mut reader = BufReader::new(stdout);
         let mut response = String::new();
 
         loop {
             let mut line = String::new();
-            let n = reader
+            let n = self
+                .reader
                 .read_line(&mut line)
                 .map_err(|e| crate::Error::Transport {
                     message: format!("failed to read: {}", e),
