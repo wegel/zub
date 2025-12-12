@@ -180,14 +180,18 @@ enum Commands {
     /// show repository statistics
     Stats,
 
-    /// show disk usage per ref
+    /// show disk usage per ref (or within a ref with --depth)
     Du {
-        /// optional glob pattern to filter refs (e.g. "x86_64/pkg/*/neovim/*")
+        /// ref name or glob pattern to filter refs
         pattern: Option<String>,
 
-        /// number of top refs to show (default: 20)
+        /// number of top entries to show (default: 20)
         #[arg(short, long, default_value = "20")]
         limit: usize,
+
+        /// show breakdown within ref at this depth (e.g. 1=top dirs, 2=two levels)
+        #[arg(short, long)]
+        depth: Option<usize>,
     },
 
     /// truncate history, keeping only latest commit per ref
@@ -523,17 +527,40 @@ fn run(cli: Cli) -> zub::Result<()> {
             }
         }
 
-        Commands::Du { pattern, limit } => {
+        Commands::Du {
+            pattern,
+            limit,
+            depth,
+        } => {
             let repo = Repo::open(&repo_path)?;
-            let sizes = zub::du(&repo, pattern.as_deref())?;
 
-            for entry in sizes.iter().take(limit) {
-                let mb = entry.bytes as f64 / 1_000_000.0;
-                println!("{:>10.1} MB  {}", mb, entry.ref_name);
-            }
+            if let Some(d) = depth {
+                // show breakdown within a specific ref
+                let ref_name = pattern.as_deref().ok_or_else(|| {
+                    zub::Error::RefNotFound("ref name required with --depth".to_string())
+                })?;
+                let sizes = zub::du_tree(&repo, ref_name, d)?;
 
-            if sizes.len() > limit {
-                println!("... and {} more refs", sizes.len() - limit);
+                for entry in sizes.iter().take(limit) {
+                    let mb = entry.bytes as f64 / 1_000_000.0;
+                    println!("{:>10.1} MB  {}", mb, entry.path);
+                }
+
+                if sizes.len() > limit {
+                    println!("... and {} more paths", sizes.len() - limit);
+                }
+            } else {
+                // show disk usage per ref
+                let sizes = zub::du(&repo, pattern.as_deref())?;
+
+                for entry in sizes.iter().take(limit) {
+                    let mb = entry.bytes as f64 / 1_000_000.0;
+                    println!("{:>10.1} MB  {}", mb, entry.ref_name);
+                }
+
+                if sizes.len() > limit {
+                    println!("... and {} more refs", sizes.len() - limit);
+                }
             }
         }
 

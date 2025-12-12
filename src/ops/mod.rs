@@ -23,7 +23,7 @@ pub use gc::{gc, GcStats};
 pub use log::{log, LogEntry};
 pub use ls_tree::{ls_tree, ls_tree_recursive, LsTreeEntry};
 pub use map::{map, MapOptions, MapStats};
-pub use stats::{du, stats, RefSize, RepoStats};
+pub use stats::{du, du_tree, PathSize, RefSize, RepoStats, stats};
 pub use truncate::{truncate_history, TruncateStats};
 pub use union::{union as union_trees, ConflictResolution, UnionOptions};
 pub use union_checkout::{checkout_union as union_checkout, UnionCheckoutOptions};

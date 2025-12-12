@@ -285,3 +285,84 @@ fn collect_tree_blobs(repo: &Repo, tree_hash: &Hash, blobs: &mut HashSet<Hash>) 
 
     Ok(())
 }
+
+/// disk usage entry for a path within a tree
+#[derive(Debug, Clone)]
+pub struct PathSize {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// calculate disk usage per directory within a ref
+/// depth controls how deep to report (1 = top-level dirs only)
+pub fn du_tree(repo: &Repo, ref_name: &str, depth: usize) -> Result<Vec<PathSize>> {
+    let blob_sizes = build_blob_size_map(repo)?;
+
+    let commit_hash = read_ref(repo, ref_name)?;
+    let commit = read_commit(repo, &commit_hash)?;
+
+    let mut results: HashMap<String, u64> = HashMap::new();
+
+    collect_tree_sizes(repo, &commit.tree, "", depth, &blob_sizes, &mut results)?;
+
+    let mut sorted: Vec<PathSize> = results
+        .into_iter()
+        .map(|(path, bytes)| PathSize { path, bytes })
+        .collect();
+
+    sorted.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+
+    Ok(sorted)
+}
+
+fn collect_tree_sizes(
+    repo: &Repo,
+    tree_hash: &Hash,
+    prefix: &str,
+    depth: usize,
+    blob_sizes: &HashMap<Hash, u64>,
+    results: &mut HashMap<String, u64>,
+) -> Result<u64> {
+    let tree = read_tree(repo, tree_hash)?;
+    let mut total = 0u64;
+
+    for entry in tree.entries() {
+        let path = if prefix.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{}/{}", prefix, entry.name)
+        };
+
+        let size = match &entry.kind {
+            EntryKind::Regular { hash, .. } | EntryKind::Symlink { hash } => {
+                *blob_sizes.get(hash).unwrap_or(&0)
+            }
+            EntryKind::Directory { hash, .. } => {
+                let current_depth = path.matches('/').count() + 1;
+                if current_depth < depth {
+                    collect_tree_sizes(repo, hash, &path, depth, blob_sizes, results)?
+                } else {
+                    // at max depth, sum up everything below
+                    let mut blobs = HashSet::new();
+                    collect_tree_blobs(repo, hash, &mut blobs)?;
+                    blobs.iter().filter_map(|h| blob_sizes.get(h)).sum()
+                }
+            }
+            _ => 0,
+        };
+
+        total += size;
+
+        // record at the appropriate depth
+        let current_depth = path.matches('/').count() + 1;
+        if current_depth <= depth {
+            if matches!(entry.kind, EntryKind::Directory { .. }) {
+                *results.entry(path).or_insert(0) += size;
+            } else if current_depth == depth || depth == 0 {
+                *results.entry(path).or_insert(0) += size;
+            }
+        }
+    }
+
+    Ok(total)
+}
