@@ -39,8 +39,18 @@ pub fn checkout(repo: &Repo, ref_name: &str, target: &Path, opts: CheckoutOption
     let commit_hash = resolve_ref(repo, ref_name)?;
     let commit = read_commit(repo, &commit_hash)?;
 
+    checkout_from_tree_hash(repo, &commit.tree, target, opts)
+}
+
+/// checkout directly from a tree hash (bypasses commit/ref resolution)
+pub fn checkout_from_tree_hash(
+    repo: &Repo,
+    tree_hash: &Hash,
+    target: &Path,
+    opts: CheckoutOptions,
+) -> Result<()> {
     // load root tree
-    let tree = read_tree(repo, &commit.tree)?;
+    let tree = read_tree(repo, tree_hash)?;
 
     // check target
     if target.exists() {

@@ -147,6 +147,101 @@ fn collect_refs(base: &PathBuf, dir: &PathBuf, refs: &mut Vec<String>) -> Result
     Ok(())
 }
 
+// --- Artifact ref helpers ---
+
+/// write an artifact ref: artifacts/<manifest_hash>/<output> → artifact_hash
+pub fn write_artifact_ref(
+    repo: &Repo,
+    manifest_hash: &str,
+    output: &str,
+    artifact_hash: &Hash,
+) -> Result<()> {
+    let ref_name = format!("{}/{}", manifest_hash, output);
+    validate_ref_name(&ref_name)?;
+
+    let ref_path = repo.artifact_refs_path().join(&ref_name);
+
+    // ensure parent directories exist
+    if let Some(parent) = ref_path.parent() {
+        fs::create_dir_all(parent).with_path(parent)?;
+    }
+
+    // atomic write
+    let tmp_path = repo.tmp_path().join(uuid::Uuid::new_v4().to_string());
+    {
+        let mut tmp_file = File::create(&tmp_path).with_path(&tmp_path)?;
+        writeln!(tmp_file, "{}", artifact_hash.to_hex()).with_path(&tmp_path)?;
+        tmp_file.sync_all().with_path(&tmp_path)?;
+    }
+
+    fs::rename(&tmp_path, &ref_path).with_path(&ref_path)?;
+
+    if let Some(parent) = ref_path.parent() {
+        let dir = File::open(parent).with_path(parent)?;
+        dir.sync_all().with_path(parent)?;
+    }
+
+    Ok(())
+}
+
+/// read an artifact ref: artifacts/<manifest_hash>/<output> → artifact_hash
+pub fn read_artifact_ref(repo: &Repo, manifest_hash: &str, output: &str) -> Result<Hash> {
+    let ref_name = format!("{}/{}", manifest_hash, output);
+    let ref_path = repo.artifact_refs_path().join(&ref_name);
+
+    let content = fs::read_to_string(&ref_path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::RefNotFound(format!("artifacts/{}", ref_name))
+        } else {
+            Error::Io {
+                path: ref_path.clone(),
+                source: e,
+            }
+        }
+    })?;
+
+    Hash::from_hex(content.trim())
+}
+
+/// check if an artifact ref exists
+pub fn artifact_ref_exists(repo: &Repo, manifest_hash: &str, output: &str) -> bool {
+    let ref_name = format!("{}/{}", manifest_hash, output);
+    repo.artifact_refs_path().join(&ref_name).exists()
+}
+
+/// list all artifact refs for a manifest hash
+pub fn list_artifact_refs(repo: &Repo, manifest_hash: &str) -> Result<Vec<String>> {
+    let manifest_dir = repo.artifact_refs_path().join(manifest_hash);
+    let mut outputs = Vec::new();
+
+    if manifest_dir.exists() {
+        collect_refs_recursive(&manifest_dir, &manifest_dir, &mut outputs)?;
+    }
+
+    outputs.sort();
+    Ok(outputs)
+}
+
+/// recursively collect refs from directory (for artifact refs)
+fn collect_refs_recursive(base: &PathBuf, dir: &PathBuf, refs: &mut Vec<String>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).with_path(dir)? {
+        let entry = entry.with_path(dir)?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_refs_recursive(base, &path, refs)?;
+        } else if path.is_file() {
+            if let Ok(rel) = path.strip_prefix(base) {
+                refs.push(rel.to_string_lossy().to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// validate ref name
 fn validate_ref_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -337,5 +432,63 @@ mod tests {
 
         let read_hash = read_ref(&repo, "myref").unwrap();
         assert_eq!(read_hash, hash2);
+    }
+
+    // --- Artifact ref tests ---
+
+    #[test]
+    fn test_write_and_read_artifact_ref() {
+        let (_dir, repo) = test_repo();
+
+        let manifest_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let artifact_hash =
+            Hash::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+
+        write_artifact_ref(&repo, manifest_hash, "bundles/dev", &artifact_hash).unwrap();
+
+        let read_hash = read_artifact_ref(&repo, manifest_hash, "bundles/dev").unwrap();
+        assert_eq!(artifact_hash, read_hash);
+    }
+
+    #[test]
+    fn test_artifact_ref_exists() {
+        let (_dir, repo) = test_repo();
+
+        let manifest_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let artifact_hash = Hash::ZERO;
+
+        assert!(!artifact_ref_exists(&repo, manifest_hash, "bundles/dev"));
+
+        write_artifact_ref(&repo, manifest_hash, "bundles/dev", &artifact_hash).unwrap();
+
+        assert!(artifact_ref_exists(&repo, manifest_hash, "bundles/dev"));
+        assert!(!artifact_ref_exists(&repo, manifest_hash, "bundles/full"));
+    }
+
+    #[test]
+    fn test_list_artifact_refs() {
+        let (_dir, repo) = test_repo();
+
+        let manifest_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let artifact_hash = Hash::ZERO;
+
+        write_artifact_ref(&repo, manifest_hash, "bundles/dev", &artifact_hash).unwrap();
+        write_artifact_ref(&repo, manifest_hash, "bundles/full", &artifact_hash).unwrap();
+        write_artifact_ref(&repo, manifest_hash, "outputs/bin", &artifact_hash).unwrap();
+
+        let refs = list_artifact_refs(&repo, manifest_hash).unwrap();
+        assert_eq!(refs.len(), 3);
+        assert!(refs.contains(&"bundles/dev".to_string()));
+        assert!(refs.contains(&"bundles/full".to_string()));
+        assert!(refs.contains(&"outputs/bin".to_string()));
+    }
+
+    #[test]
+    fn test_read_nonexistent_artifact_ref() {
+        let (_dir, repo) = test_repo();
+
+        let result = read_artifact_ref(&repo, "nonexistent", "bundles/dev");
+        assert!(matches!(result, Err(Error::RefNotFound(_))));
     }
 }

@@ -14,7 +14,7 @@ mod truncate;
 mod union;
 mod union_checkout;
 
-pub use checkout::{checkout, CheckoutOptions};
+pub use checkout::{checkout, checkout_from_tree_hash, CheckoutOptions};
 pub use commit::{commit, commit_with_metadata};
 pub use diff::{diff, diff_trees};
 pub use export::{export_path, ExportOptions};

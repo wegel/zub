@@ -102,6 +102,11 @@ impl Repo {
         self.objects_path().join("commits")
     }
 
+    /// path to artifacts directory
+    pub fn artifacts_path(&self) -> PathBuf {
+        self.objects_path().join("artifacts")
+    }
+
     /// path to refs directory
     pub fn refs_path(&self) -> PathBuf {
         self.path.join("refs/heads")
@@ -110,6 +115,11 @@ impl Repo {
     /// path to tags directory
     pub fn tags_path(&self) -> PathBuf {
         self.path.join("refs/tags")
+    }
+
+    /// path to artifact refs directory
+    pub fn artifact_refs_path(&self) -> PathBuf {
+        self.path.join("refs/artifacts")
     }
 
     /// path to tmp directory (for atomic writes)

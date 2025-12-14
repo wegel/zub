@@ -53,13 +53,16 @@ pub use namespace::{
     parse_id_map, remap, MapEntry, NsConfig,
 };
 pub use object::{
-    blob_exists, commit_path, read_blob, read_commit, read_tree, tree_path, write_blob,
-    write_commit, write_tree,
+    artifact_exists, artifact_path, blob_exists, commit_path, read_artifact, read_blob,
+    read_commit, read_tree, tree_path, write_artifact, write_blob, write_commit, write_tree,
 };
 pub use ops::{du, du_tree, stats, truncate_history, PathSize, RefSize, RepoStats, TruncateStats};
 pub use refs::{
-    delete_ref, delete_refs_matching, list_refs, list_refs_matching, read_ref, ref_exists,
-    resolve_ref, write_ref,
+    artifact_ref_exists, delete_ref, delete_refs_matching, list_artifact_refs, list_refs,
+    list_refs_matching, read_artifact_ref, read_ref, ref_exists, resolve_ref, write_artifact_ref,
+    write_ref,
 };
 pub use repo::Repo;
-pub use types::{ChangeKind, Commit, DiffEntry, EntryKind, SparseRegion, Tree, TreeEntry, Xattr};
+pub use types::{
+    Artifact, ChangeKind, Commit, DiffEntry, EntryKind, SparseRegion, Tree, TreeEntry, Xattr,
+};
