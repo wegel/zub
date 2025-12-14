@@ -313,13 +313,14 @@ fn check_remote_zub(host: &str, user: Option<&str>) -> Result<bool> {
 }
 
 fn deploy_zub_to_remote(host: &str, user: Option<&str>) -> Result<()> {
-    // TODO: this assumes the remote has the same architecture as the local machine.
-    // in the future, we could detect the remote arch and either:
-    // - download the correct binary from a release
-    // - refuse with a helpful error message
-    let local_exe = std::env::current_exe().map_err(|e| crate::Error::Transport {
-        message: format!("failed to get current executable path: {}", e),
-    })?;
+    // use ZUB_BINARY env var if set, otherwise fall back to current executable
+    let local_exe = if let Ok(zub_bin) = std::env::var("ZUB_BINARY") {
+        std::path::PathBuf::from(zub_bin)
+    } else {
+        std::env::current_exe().map_err(|e| crate::Error::Transport {
+            message: format!("failed to get current executable path: {}", e),
+        })?
+    };
 
     // get the resolved remote path
     let resolved_path = get_resolved_remote_path(host, user)?;
