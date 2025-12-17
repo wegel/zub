@@ -65,24 +65,54 @@ pub fn checkout_from_tree_hash(
         fs::create_dir_all(target).with_path(target)?;
     }
 
-    // checkout tree
+    // checkout tree, collecting pending hardlinks
     let mut hardlink_tracker = CheckoutHardlinkTracker::new();
-    checkout_tree(repo, &tree, target, "", &mut hardlink_tracker, &opts)
+    let mut pending_hardlinks = Vec::new();
+    checkout_tree(
+        repo,
+        &tree,
+        target,
+        "",
+        &mut hardlink_tracker,
+        &mut pending_hardlinks,
+        &opts,
+    )?;
+
+    // create all hardlinks now that all files are checked out
+    for pending in pending_hardlinks {
+        let target_fs_path = hardlink_tracker
+            .get(&pending.target_path)
+            .ok_or_else(|| Error::HardlinkTargetNotFound(pending.target_path.clone()))?;
+
+        create_hardlink(&pending.entry_path, target_fs_path)?;
+    }
+
+    Ok(())
+}
+
+/// pending hardlink to be created after all files are checked out
+struct PendingHardlink {
+    entry_path: std::path::PathBuf,
+    target_path: String,
 }
 
 /// checkout a tree to a directory (recursive helper)
+///
+/// hardlinks are collected and returned to be processed after all files
+/// in the entire tree are checked out. this handles cases where the target
+/// is in a sibling directory that would otherwise be processed later.
 fn checkout_tree(
     repo: &Repo,
     tree: &Tree,
     target: &Path,
     prefix: &str,
     hardlink_tracker: &mut CheckoutHardlinkTracker,
+    pending_hardlinks: &mut Vec<PendingHardlink>,
     opts: &CheckoutOptions,
 ) -> Result<()> {
     fs::create_dir_all(target).with_path(target)?;
 
-    // first pass: checkout all non-hardlink entries
-    // this ensures hardlink targets exist before we create hardlinks
+    // checkout all non-hardlink entries, collecting hardlinks for later
     for entry in tree.entries() {
         let entry_path = target.join(&entry.name);
         let logical_path = if prefix.is_empty() {
@@ -92,9 +122,12 @@ fn checkout_tree(
         };
 
         match &entry.kind {
-            EntryKind::Hardlink { .. } => {
-                // skip hardlinks in first pass
-                continue;
+            EntryKind::Hardlink { target_path } => {
+                // defer hardlink creation until all files are checked out
+                pending_hardlinks.push(PendingHardlink {
+                    entry_path,
+                    target_path: target_path.clone(),
+                });
             }
 
             EntryKind::Regular {
@@ -124,6 +157,7 @@ fn checkout_tree(
                     &entry_path,
                     &logical_path,
                     hardlink_tracker,
+                    pending_hardlinks,
                     opts,
                 )?;
 
@@ -186,20 +220,6 @@ fn checkout_tree(
             } => {
                 create_socket_placeholder(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
-        }
-    }
-
-    // second pass: create hardlinks
-    for entry in tree.entries() {
-        if let EntryKind::Hardlink { target_path } = &entry.kind {
-            let entry_path = target.join(&entry.name);
-
-            // look up the target's filesystem path
-            let target_fs_path = hardlink_tracker
-                .get(target_path)
-                .ok_or_else(|| Error::HardlinkTargetNotFound(target_path.clone()))?;
-
-            create_hardlink(&entry_path, target_fs_path)?;
         }
     }
 

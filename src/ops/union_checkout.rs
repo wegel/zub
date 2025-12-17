@@ -24,6 +24,12 @@ pub struct UnionCheckoutOptions {
     pub hardlink: bool,
 }
 
+/// pending hardlink for deferred creation
+struct PendingHardlink {
+    entry_path: std::path::PathBuf,
+    target_path: String,
+}
+
 /// checkout multiple refs as a union to a target directory
 ///
 /// unlike the in-store union operation, this writes directly to the filesystem.
@@ -51,6 +57,7 @@ pub fn checkout_union(
     }
 
     let mut hardlink_tracker = CheckoutHardlinkTracker::new();
+    let mut pending_hardlinks = Vec::new();
 
     // process each ref in order
     for ref_name in refs {
@@ -65,13 +72,26 @@ pub fn checkout_union(
             "",
             opts.on_conflict,
             &mut hardlink_tracker,
+            &mut pending_hardlinks,
         )?;
+    }
+
+    // create all hardlinks now that all files are checked out
+    for pending in pending_hardlinks {
+        let target_fs_path = hardlink_tracker
+            .get(&pending.target_path)
+            .ok_or_else(|| Error::HardlinkTargetNotFound(pending.target_path.clone()))?;
+
+        create_hardlink(&pending.entry_path, target_fs_path)?;
     }
 
     Ok(())
 }
 
 /// checkout a tree with union semantics
+///
+/// hardlinks are collected in pending_hardlinks for deferred creation,
+/// allowing targets in sibling directories to be processed first.
 fn checkout_tree_union(
     repo: &Repo,
     tree: &Tree,
@@ -79,10 +99,11 @@ fn checkout_tree_union(
     prefix: &str,
     on_conflict: ConflictResolution,
     hardlink_tracker: &mut CheckoutHardlinkTracker,
+    pending_hardlinks: &mut Vec<PendingHardlink>,
 ) -> Result<()> {
     fs::create_dir_all(target).with_path(target)?;
 
-    // first pass: non-hardlink entries
+    // checkout all non-hardlink entries, collecting hardlinks for later
     for entry in tree.entries() {
         let entry_path = target.join(&entry.name);
         let logical_path = if prefix.is_empty() {
@@ -92,7 +113,25 @@ fn checkout_tree_union(
         };
 
         match &entry.kind {
-            EntryKind::Hardlink { .. } => continue, // second pass
+            EntryKind::Hardlink { target_path } => {
+                // check conflict before deferring
+                if entry_path.exists() {
+                    match on_conflict {
+                        ConflictResolution::Error => {
+                            return Err(Error::UnionConflict(entry_path));
+                        }
+                        ConflictResolution::First => continue,
+                        ConflictResolution::Last => {
+                            fs::remove_file(&entry_path).with_path(&entry_path)?;
+                        }
+                    }
+                }
+                // defer hardlink creation until all files are checked out
+                pending_hardlinks.push(PendingHardlink {
+                    entry_path,
+                    target_path: target_path.clone(),
+                });
+            }
 
             EntryKind::Regular {
                 hash, sparse_map, ..
@@ -171,6 +210,7 @@ fn checkout_tree_union(
                     &logical_path,
                     on_conflict,
                     hardlink_tracker,
+                    pending_hardlinks,
                 )?;
 
                 // apply directory metadata
@@ -282,31 +322,6 @@ fn checkout_tree_union(
 
                 create_socket_placeholder(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
-        }
-    }
-
-    // second pass: hardlinks
-    for entry in tree.entries() {
-        if let EntryKind::Hardlink { target_path } = &entry.kind {
-            let entry_path = target.join(&entry.name);
-
-            if entry_path.exists() {
-                match on_conflict {
-                    ConflictResolution::Error => {
-                        return Err(Error::UnionConflict(entry_path));
-                    }
-                    ConflictResolution::First => continue,
-                    ConflictResolution::Last => {
-                        fs::remove_file(&entry_path).with_path(&entry_path)?;
-                    }
-                }
-            }
-
-            let target_fs_path = hardlink_tracker
-                .get(target_path)
-                .ok_or_else(|| Error::HardlinkTargetNotFound(target_path.clone()))?;
-
-            create_hardlink(&entry_path, target_fs_path)?;
         }
     }
 
