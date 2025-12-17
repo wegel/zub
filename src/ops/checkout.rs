@@ -4,7 +4,8 @@ use std::path::Path;
 use crate::error::{Error, IoResultExt, Result};
 use crate::fs::{
     apply_metadata, create_block_device, create_char_device, create_fifo, create_hardlink,
-    create_socket_placeholder, create_symlink, write_sparse_file, CheckoutHardlinkTracker,
+    create_socket_placeholder, create_symlink, read_xattrs, write_sparse_file,
+    CheckoutHardlinkTracker,
 };
 use crate::hash::Hash;
 use crate::object::{blob_path, read_blob, read_commit, read_tree};
@@ -246,15 +247,12 @@ fn checkout_regular_file(
             let total_size: u64 = regions.iter().map(|r| r.end()).max().unwrap_or(0);
             write_sparse_file(dest, &data, regions, total_size)?;
 
-            // copy metadata from blob
-            let blob = blob_path(repo, hash);
-            let meta = fs::metadata(&blob).with_path(&blob)?;
-            fs::set_permissions(dest, meta.permissions()).with_path(dest)?;
+            // apply full metadata from blob (uid, gid, mode, xattrs)
+            apply_blob_metadata(repo, hash, dest)?;
         }
 
-        Some(regions) if regions.is_empty() => {
+        Some([]) => {
             // all holes (empty sparse file)
-            // just create empty file
             fs::write(dest, b"").with_path(dest)?;
         }
 
@@ -269,11 +267,24 @@ fn checkout_regular_file(
             // copy mode (--copy flag or sparse without preserve_sparse)
             let blob = blob_path(repo, hash);
             fs::copy(&blob, dest).with_path(dest)?;
-            // metadata was copied with the file
+
+            // apply full metadata from blob (fs::copy only copies content and basic perms)
+            apply_blob_metadata(repo, hash, dest)?;
         }
     }
 
     Ok(())
+}
+
+/// apply metadata (uid, gid, mode, xattrs) from a blob file to a destination path
+fn apply_blob_metadata(repo: &Repo, hash: &Hash, dest: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let blob = blob_path(repo, hash);
+    let meta = fs::metadata(&blob).with_path(&blob)?;
+    let xattrs = read_xattrs(&blob)?;
+
+    apply_metadata(dest, meta.uid(), meta.gid(), meta.mode(), &xattrs)
 }
 
 /// checkout a symlink
@@ -285,9 +296,10 @@ fn checkout_symlink(repo: &Repo, dest: &Path, hash: &Hash) -> Result<()> {
     // read metadata from blob file
     let blob = blob_path(repo, hash);
     let meta = fs::symlink_metadata(&blob).with_path(&blob)?;
+    let xattrs = read_xattrs(&blob)?;
 
     use std::os::unix::fs::MetadataExt;
-    create_symlink(dest, &target, meta.uid(), meta.gid(), &[])?;
+    create_symlink(dest, &target, meta.uid(), meta.gid(), &xattrs)?;
 
     Ok(())
 }
@@ -476,5 +488,47 @@ mod tests {
                 .to_string_lossy(),
             "../file1.txt"
         );
+    }
+
+    #[test]
+    fn test_checkout_copy_preserves_xattrs() {
+        let (dir, repo) = test_repo();
+
+        // create source with xattrs
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let file_path = source.join("file.txt");
+        fs::write(&file_path, "content").unwrap();
+
+        // set xattr (user namespace works without privileges)
+        if xattr::set(&file_path, "user.test", b"xattr_value").is_err() {
+            // xattrs not supported on this filesystem, skip test
+            return;
+        }
+
+        commit(&repo, &source, "xattr-test", None, None).unwrap();
+
+        // checkout in COPY mode (hardlink=false)
+        let target = dir.path().join("target");
+        checkout(
+            &repo,
+            "xattr-test",
+            &target,
+            CheckoutOptions {
+                hardlink: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // verify xattr was preserved
+        let checked_out = target.join("file.txt");
+        let value = xattr::get(&checked_out, "user.test").unwrap();
+        assert_eq!(value, Some(b"xattr_value".to_vec()));
+
+        // verify it's actually a copy, not a hardlink
+        let source_ino = fs::metadata(&file_path).unwrap().ino();
+        let target_ino = fs::metadata(&checked_out).unwrap().ino();
+        assert_ne!(source_ino, target_ino);
     }
 }
