@@ -29,11 +29,9 @@ impl Artifact {
     /// compute the artifact hash - this is DETERMINISTIC
     /// same (tree, manifest_hash, output) = same hash, always
     pub fn compute_hash(&self) -> Hash {
-        use sha2::{Digest, Sha256};
-
         let mut buf = Vec::new();
         ciborium::into_writer(self, &mut buf).expect("cbor serialization failed");
-        Hash::from_bytes(Sha256::digest(&buf).into())
+        Hash::from_bytes(*blake3::hash(&buf).as_bytes())
     }
 }
 

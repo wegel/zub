@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
 
-use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::error::Result;
@@ -104,7 +103,7 @@ pub fn fsck(repo: &Repo) -> Result<FsckReport> {
         // verify tree hash
         let path = crate::object::tree_path(repo, hash);
         if let Ok(compressed) = fs::read(&path) {
-            let actual_hash = Hash::from_bytes(Sha256::digest(&compressed).into());
+            let actual_hash = Hash::from_bytes(*blake3::hash(&compressed).as_bytes());
             if actual_hash != *hash {
                 report.corrupt_objects.push(CorruptObject {
                     hash: *hash,
@@ -125,7 +124,7 @@ pub fn fsck(repo: &Repo) -> Result<FsckReport> {
         // verify commit hash
         let path = crate::object::commit_path(repo, hash);
         if let Ok(compressed) = fs::read(&path) {
-            let actual_hash = Hash::from_bytes(Sha256::digest(&compressed).into());
+            let actual_hash = Hash::from_bytes(*blake3::hash(&compressed).as_bytes());
             if actual_hash != *hash {
                 report.corrupt_objects.push(CorruptObject {
                     hash: *hash,

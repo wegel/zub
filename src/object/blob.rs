@@ -2,7 +2,6 @@ use std::fs::{self, File, Permissions};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-
 use nix::unistd::{Gid, Uid};
 
 use crate::error::{Error, IoResultExt, Result};

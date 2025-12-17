@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fmt;
 
 use crate::types::Xattr;
 use crate::Error;
 
-/// SHA-256 hash used for content addressing
+/// BLAKE3 hash used for content addressing
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Hash([u8; 32]);
 
@@ -103,7 +102,7 @@ pub fn compute_blob_hash(
     xattrs: &[Xattr],
     content: &[u8],
 ) -> Hash {
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
 
     // fixed header
     hasher.update(&inside_uid.to_le_bytes());
@@ -125,7 +124,7 @@ pub fn compute_blob_hash(
     // content
     hasher.update(content);
 
-    Hash(hasher.finalize().into())
+    Hash(*hasher.finalize().as_bytes())
 }
 
 /// compute hash for symlink (target is the "content")
@@ -148,20 +147,19 @@ pub fn compute_symlink_hash(
 /// compute hash of compressed bytes (for trees and commits)
 #[allow(dead_code)]
 pub fn compute_compressed_hash(compressed: &[u8]) -> Hash {
-    let digest = Sha256::digest(compressed);
-    Hash(digest.into())
+    Hash(*blake3::hash(compressed).as_bytes())
 }
 
 /// streaming blob hasher for large files
 #[allow(dead_code)]
 pub struct BlobHasher {
-    hasher: Sha256,
+    hasher: blake3::Hasher,
 }
 
 impl BlobHasher {
     /// create new hasher, writing header and xattrs immediately
     pub fn new(inside_uid: u32, inside_gid: u32, mode: u32, xattrs: &[Xattr]) -> Self {
-        let mut hasher = Sha256::new();
+        let mut hasher = blake3::Hasher::new();
 
         hasher.update(&inside_uid.to_le_bytes());
         hasher.update(&inside_gid.to_le_bytes());
@@ -188,7 +186,7 @@ impl BlobHasher {
 
     /// finalize and return hash
     pub fn finalize(self) -> Hash {
-        Hash(self.hasher.finalize().into())
+        Hash(*self.hasher.finalize().as_bytes())
     }
 }
 

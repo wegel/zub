@@ -2,8 +2,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 
-use sha2::{Digest, Sha256};
-
 use crate::error::{Error, IoResultExt, Result};
 use crate::hash::Hash;
 use crate::repo::Repo;
@@ -25,7 +23,7 @@ pub fn write_tree(repo: &Repo, tree: &Tree) -> Result<Hash> {
     })?;
 
     // hash the compressed bytes
-    let hash = Hash::from_bytes(Sha256::digest(&compressed).into());
+    let hash = Hash::from_bytes(*blake3::hash(&compressed).as_bytes());
 
     let (dir, file) = hash.to_path_components();
     let tree_dir = repo.trees_path().join(&dir);
@@ -73,7 +71,7 @@ pub fn read_tree(repo: &Repo, hash: &Hash) -> Result<Tree> {
     })?;
 
     // verify hash
-    let actual_hash = Hash::from_bytes(Sha256::digest(&compressed).into());
+    let actual_hash = Hash::from_bytes(*blake3::hash(&compressed).as_bytes());
     if actual_hash != *hash {
         return Err(Error::CorruptObject(*hash));
     }
