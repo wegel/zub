@@ -87,6 +87,10 @@ enum Commands {
         /// destination directory
         destination: PathBuf,
 
+        /// allow checkout into non-empty directory (overwrites existing files)
+        #[arg(short, long)]
+        force: bool,
+
         /// use copy instead of hardlinks
         #[arg(long)]
         copy: bool,
@@ -157,6 +161,10 @@ enum Commands {
         /// destination directory
         #[arg(short, long)]
         destination: PathBuf,
+
+        /// allow checkout into non-empty directory (overwrites existing files)
+        #[arg(short, long)]
+        force: bool,
 
         /// conflict resolution: error, first, last
         #[arg(long, default_value = "error")]
@@ -344,12 +352,13 @@ fn run(cli: Cli) -> zub::Result<()> {
         Commands::Checkout {
             ref_name,
             destination,
+            force,
             copy,
             sparse,
         } => {
             let repo = Repo::open(&repo_path)?;
             let options = CheckoutOptions {
-                force: false,
+                force,
                 hardlink: !copy,
                 preserve_sparse: sparse,
             };
@@ -424,6 +433,7 @@ fn run(cli: Cli) -> zub::Result<()> {
         Commands::UnionCheckout {
             refs,
             destination,
+            force,
             on_conflict,
             copy,
         } => {
@@ -432,7 +442,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
 
             let options = UnionCheckoutOptions {
-                force: false,
+                force,
                 on_conflict: resolution,
                 hardlink: !copy,
             };
