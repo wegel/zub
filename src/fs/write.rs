@@ -184,6 +184,56 @@ pub fn apply_metadata(path: &Path, uid: u32, gid: u32, mode: u32, xattrs: &[Xatt
     Ok(())
 }
 
+/// apply metadata with graceful xattr handling for privileged namespaces
+///
+/// for `security.*` and `trusted.*` xattrs that fail with EPERM,
+/// prints a warning and continues. other xattrs and errors fail normally.
+pub fn apply_metadata_graceful(
+    path: &Path,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    xattrs: &[Xattr],
+) -> Result<()> {
+    // set xattrs first (while we still have write permission)
+    for xattr in xattrs {
+        if let Err(e) = xattr::set(path, &xattr.name, &xattr.value) {
+            // check if this is a privileged namespace with permission error
+            let is_privileged =
+                xattr.name.starts_with("security.") || xattr.name.starts_with("trusted.");
+            let is_permission_error =
+                e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(1);
+
+            if is_privileged && is_permission_error {
+                eprintln!(
+                    "warning: cannot set {} on {:?} (requires privileges), skipping",
+                    xattr.name, path
+                );
+            } else {
+                return Err(Error::Xattr {
+                    path: path.to_path_buf(),
+                    message: format!("failed to set {}: {}", xattr.name, e),
+                });
+            }
+        }
+    }
+
+    // set ownership (skip if matches current user to avoid permission errors when not root)
+    let current_uid = nix::unistd::getuid().as_raw();
+    let current_gid = nix::unistd::getgid().as_raw();
+    if uid != current_uid || gid != current_gid {
+        chown(path, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid))).map_err(|e| Error::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, e),
+        })?;
+    }
+
+    // set mode last (might remove write permission)
+    fs::set_permissions(path, Permissions::from_mode(mode & 0o7777)).with_path(path)?;
+
+    Ok(())
+}
+
 /// helper to create device nodes
 fn create_device_node(
     path: &Path,

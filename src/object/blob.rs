@@ -73,13 +73,9 @@ pub fn write_blob(
         })?;
     }
 
-    // set xattrs
-    for xattr in xattrs {
-        xattr::set(&tmp_path, &xattr.name, &xattr.value).map_err(|e| Error::Xattr {
-            path: tmp_path.clone(),
-            message: format!("failed to set {}: {}", xattr.name, e),
-        })?;
-    }
+    // note: xattrs are NOT stored on the blob file - they are stored in tree metadata
+    // this avoids requiring CAP_SETFCAP for security.capability xattrs during commit
+    let _ = xattrs; // xattrs used only for hash computation above
 
     // rename to final location
     fs::rename(&tmp_path, &blob_path).with_path(&blob_path)?;
@@ -157,12 +153,8 @@ pub fn write_blob_streaming<R: Read>(
         })?;
     }
 
-    for xattr in xattrs {
-        xattr::set(&tmp_path, &xattr.name, &xattr.value).map_err(|e| Error::Xattr {
-            path: tmp_path.clone(),
-            message: format!("failed to set {}: {}", xattr.name, e),
-        })?;
-    }
+    // note: xattrs are NOT stored on the blob file - they are stored in tree metadata
+    // this avoids requiring CAP_SETFCAP for security.capability xattrs during commit
 
     // rename to final location
     fs::rename(&tmp_path, &blob_path).with_path(&blob_path)?;

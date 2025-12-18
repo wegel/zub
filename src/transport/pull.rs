@@ -193,7 +193,7 @@ fn collect_tree_objects(
                     objects.blobs.push(*hash);
                 }
             }
-            EntryKind::Symlink { hash } => {
+            EntryKind::Symlink { hash, .. } => {
                 if !visited.contains(hash) {
                     visited.insert(*hash);
                     objects.blobs.push(*hash);

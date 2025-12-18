@@ -123,7 +123,7 @@ fn mark_tree(
             EntryKind::Regular { hash, .. } => {
                 reachable_blobs.insert(*hash);
             }
-            EntryKind::Symlink { hash } => {
+            EntryKind::Symlink { hash, .. } => {
                 reachable_blobs.insert(*hash);
             }
             EntryKind::Directory { hash, .. } => {

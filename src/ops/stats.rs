@@ -178,7 +178,7 @@ fn mark_tree(
             EntryKind::Regular { hash, .. } => {
                 reachable_blobs.insert(*hash);
             }
-            EntryKind::Symlink { hash } => {
+            EntryKind::Symlink { hash, .. } => {
                 reachable_blobs.insert(*hash);
             }
             EntryKind::Directory { hash, .. } => {
@@ -273,7 +273,7 @@ fn collect_tree_blobs(repo: &Repo, tree_hash: &Hash, blobs: &mut HashSet<Hash>) 
             EntryKind::Regular { hash, .. } => {
                 blobs.insert(*hash);
             }
-            EntryKind::Symlink { hash } => {
+            EntryKind::Symlink { hash, .. } => {
                 blobs.insert(*hash);
             }
             EntryKind::Directory { hash, .. } => {
@@ -334,7 +334,7 @@ fn collect_tree_sizes(
         };
 
         let size = match &entry.kind {
-            EntryKind::Regular { hash, .. } | EntryKind::Symlink { hash } => {
+            EntryKind::Regular { hash, .. } | EntryKind::Symlink { hash, .. } => {
                 *blob_sizes.get(hash).unwrap_or(&0)
             }
             EntryKind::Directory { hash, .. } => {

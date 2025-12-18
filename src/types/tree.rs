@@ -119,10 +119,16 @@ pub enum EntryKind {
         size: u64,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         sparse_map: Option<Vec<SparseRegion>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        xattrs: Vec<Xattr>,
     },
 
     /// symbolic link
-    Symlink { hash: Hash },
+    Symlink {
+        hash: Hash,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        xattrs: Vec<Xattr>,
+    },
 
     /// directory
     Directory {
@@ -215,33 +221,35 @@ impl EntryKind {
     pub fn hash(&self) -> Option<&Hash> {
         match self {
             EntryKind::Regular { hash, .. } => Some(hash),
-            EntryKind::Symlink { hash } => Some(hash),
+            EntryKind::Symlink { hash, .. } => Some(hash),
             EntryKind::Directory { hash, .. } => Some(hash),
             _ => None,
         }
     }
 
     /// create a regular file entry
-    pub fn regular(hash: Hash, size: u64) -> Self {
+    pub fn regular(hash: Hash, size: u64, xattrs: Vec<Xattr>) -> Self {
         Self::Regular {
             hash,
             size,
             sparse_map: None,
+            xattrs,
         }
     }
 
     /// create a sparse regular file entry
-    pub fn sparse(hash: Hash, size: u64, sparse_map: Vec<SparseRegion>) -> Self {
+    pub fn sparse(hash: Hash, size: u64, sparse_map: Vec<SparseRegion>, xattrs: Vec<Xattr>) -> Self {
         Self::Regular {
             hash,
             size,
             sparse_map: Some(sparse_map),
+            xattrs,
         }
     }
 
     /// create a symlink entry
-    pub fn symlink(hash: Hash) -> Self {
-        Self::Symlink { hash }
+    pub fn symlink(hash: Hash, xattrs: Vec<Xattr>) -> Self {
+        Self::Symlink { hash, xattrs }
     }
 
     /// create a directory entry
@@ -294,9 +302,9 @@ mod tests {
     #[test]
     fn test_tree_sorting() {
         let entries = vec![
-            TreeEntry::new("zebra", EntryKind::regular(Hash::ZERO, 0)),
-            TreeEntry::new("alpha", EntryKind::regular(Hash::ZERO, 0)),
-            TreeEntry::new("beta", EntryKind::regular(Hash::ZERO, 0)),
+            TreeEntry::new("zebra", EntryKind::regular(Hash::ZERO, 0, vec![])),
+            TreeEntry::new("alpha", EntryKind::regular(Hash::ZERO, 0, vec![])),
+            TreeEntry::new("beta", EntryKind::regular(Hash::ZERO, 0, vec![])),
         ];
         let tree = Tree::new(entries).unwrap();
         let names: Vec<_> = tree.entries().iter().map(|e| e.name.as_str()).collect();
@@ -306,8 +314,8 @@ mod tests {
     #[test]
     fn test_tree_get() {
         let entries = vec![
-            TreeEntry::new("alpha", EntryKind::regular(Hash::ZERO, 10)),
-            TreeEntry::new("beta", EntryKind::regular(Hash::ZERO, 20)),
+            TreeEntry::new("alpha", EntryKind::regular(Hash::ZERO, 10, vec![])),
+            TreeEntry::new("beta", EntryKind::regular(Hash::ZERO, 20, vec![])),
         ];
         let tree = Tree::new(entries).unwrap();
 
@@ -318,13 +326,13 @@ mod tests {
 
     #[test]
     fn test_tree_rejects_empty_name() {
-        let entries = vec![TreeEntry::new("", EntryKind::regular(Hash::ZERO, 0))];
+        let entries = vec![TreeEntry::new("", EntryKind::regular(Hash::ZERO, 0, vec![]))];
         assert!(Tree::new(entries).is_err());
     }
 
     #[test]
     fn test_tree_rejects_slash_in_name() {
-        let entries = vec![TreeEntry::new("foo/bar", EntryKind::regular(Hash::ZERO, 0))];
+        let entries = vec![TreeEntry::new("foo/bar", EntryKind::regular(Hash::ZERO, 0, vec![]))];
         assert!(Tree::new(entries).is_err());
     }
 
@@ -332,36 +340,36 @@ mod tests {
     fn test_tree_rejects_null_in_name() {
         let entries = vec![TreeEntry::new(
             "foo\0bar",
-            EntryKind::regular(Hash::ZERO, 0),
+            EntryKind::regular(Hash::ZERO, 0, vec![]),
         )];
         assert!(Tree::new(entries).is_err());
     }
 
     #[test]
     fn test_tree_rejects_dot() {
-        let entries = vec![TreeEntry::new(".", EntryKind::regular(Hash::ZERO, 0))];
+        let entries = vec![TreeEntry::new(".", EntryKind::regular(Hash::ZERO, 0, vec![]))];
         assert!(Tree::new(entries).is_err());
     }
 
     #[test]
     fn test_tree_rejects_dotdot() {
-        let entries = vec![TreeEntry::new("..", EntryKind::regular(Hash::ZERO, 0))];
+        let entries = vec![TreeEntry::new("..", EntryKind::regular(Hash::ZERO, 0, vec![]))];
         assert!(Tree::new(entries).is_err());
     }
 
     #[test]
     fn test_tree_rejects_duplicates() {
         let entries = vec![
-            TreeEntry::new("same", EntryKind::regular(Hash::ZERO, 0)),
-            TreeEntry::new("same", EntryKind::regular(Hash::ZERO, 0)),
+            TreeEntry::new("same", EntryKind::regular(Hash::ZERO, 0, vec![])),
+            TreeEntry::new("same", EntryKind::regular(Hash::ZERO, 0, vec![])),
         ];
         assert!(Tree::new(entries).is_err());
     }
 
     #[test]
     fn test_entry_kind_type_names() {
-        assert_eq!(EntryKind::regular(Hash::ZERO, 0).type_name(), "regular");
-        assert_eq!(EntryKind::symlink(Hash::ZERO).type_name(), "symlink");
+        assert_eq!(EntryKind::regular(Hash::ZERO, 0, vec![]).type_name(), "regular");
+        assert_eq!(EntryKind::symlink(Hash::ZERO, vec![]).type_name(), "symlink");
         assert_eq!(
             EntryKind::directory(Hash::ZERO, 0, 0, 0o755).type_name(),
             "directory"
@@ -372,13 +380,13 @@ mod tests {
     #[test]
     fn test_entry_kind_predicates() {
         assert!(EntryKind::directory(Hash::ZERO, 0, 0, 0o755).is_directory());
-        assert!(!EntryKind::regular(Hash::ZERO, 0).is_directory());
+        assert!(!EntryKind::regular(Hash::ZERO, 0, vec![]).is_directory());
 
-        assert!(EntryKind::regular(Hash::ZERO, 0).is_regular());
-        assert!(!EntryKind::symlink(Hash::ZERO).is_regular());
+        assert!(EntryKind::regular(Hash::ZERO, 0, vec![]).is_regular());
+        assert!(!EntryKind::symlink(Hash::ZERO, vec![]).is_regular());
 
-        assert!(EntryKind::symlink(Hash::ZERO).is_symlink());
-        assert!(!EntryKind::regular(Hash::ZERO, 0).is_symlink());
+        assert!(EntryKind::symlink(Hash::ZERO, vec![]).is_symlink());
+        assert!(!EntryKind::regular(Hash::ZERO, 0, vec![]).is_symlink());
     }
 
     #[test]
@@ -386,8 +394,8 @@ mod tests {
         let h = Hash::from_hex("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
             .unwrap();
 
-        assert_eq!(EntryKind::regular(h, 0).hash(), Some(&h));
-        assert_eq!(EntryKind::symlink(h).hash(), Some(&h));
+        assert_eq!(EntryKind::regular(h, 0, vec![]).hash(), Some(&h));
+        assert_eq!(EntryKind::symlink(h, vec![]).hash(), Some(&h));
         assert_eq!(EntryKind::directory(h, 0, 0, 0o755).hash(), Some(&h));
 
         // these don't have hashes
@@ -405,8 +413,8 @@ mod tests {
     #[test]
     fn test_tree_cbor_roundtrip() {
         let entries = vec![
-            TreeEntry::new("file.txt", EntryKind::regular(Hash::ZERO, 100)),
-            TreeEntry::new("link", EntryKind::symlink(Hash::ZERO)),
+            TreeEntry::new("file.txt", EntryKind::regular(Hash::ZERO, 100, vec![])),
+            TreeEntry::new("link", EntryKind::symlink(Hash::ZERO, vec![])),
             TreeEntry::new("dir", EntryKind::directory(Hash::ZERO, 1000, 1000, 0o755)),
             TreeEntry::new(
                 "dev",
@@ -438,12 +446,12 @@ mod tests {
     fn test_tree_cbor_determinism() {
         // same tree should produce identical cbor bytes
         let entries1 = vec![
-            TreeEntry::new("b", EntryKind::regular(Hash::ZERO, 0)),
-            TreeEntry::new("a", EntryKind::regular(Hash::ZERO, 0)),
+            TreeEntry::new("b", EntryKind::regular(Hash::ZERO, 0, vec![])),
+            TreeEntry::new("a", EntryKind::regular(Hash::ZERO, 0, vec![])),
         ];
         let entries2 = vec![
-            TreeEntry::new("a", EntryKind::regular(Hash::ZERO, 0)),
-            TreeEntry::new("b", EntryKind::regular(Hash::ZERO, 0)),
+            TreeEntry::new("a", EntryKind::regular(Hash::ZERO, 0, vec![])),
+            TreeEntry::new("b", EntryKind::regular(Hash::ZERO, 0, vec![])),
         ];
 
         let tree1 = Tree::new(entries1).unwrap();
@@ -460,7 +468,7 @@ mod tests {
     #[test]
     fn test_sparse_entry() {
         let regions = vec![SparseRegion::new(0, 100), SparseRegion::new(1000, 200)];
-        let kind = EntryKind::sparse(Hash::ZERO, 2000, regions.clone());
+        let kind = EntryKind::sparse(Hash::ZERO, 2000, regions.clone(), vec![]);
 
         if let EntryKind::Regular {
             sparse_map, size, ..

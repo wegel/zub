@@ -118,7 +118,7 @@ mod tests {
         let (_dir, repo) = test_repo();
 
         let entries = vec![
-            TreeEntry::new("file.txt", EntryKind::regular(Hash::ZERO, 100)),
+            TreeEntry::new("file.txt", EntryKind::regular(Hash::ZERO, 100, vec![])),
             TreeEntry::new("subdir", EntryKind::directory(Hash::ZERO, 0, 0, 0o755)),
         ];
         let tree = Tree::new(entries).unwrap();
@@ -134,7 +134,7 @@ mod tests {
     fn test_tree_deduplication() {
         let (_dir, repo) = test_repo();
 
-        let entries = vec![TreeEntry::new("foo", EntryKind::regular(Hash::ZERO, 50))];
+        let entries = vec![TreeEntry::new("foo", EntryKind::regular(Hash::ZERO, 50, vec![]))];
         let tree = Tree::new(entries).unwrap();
 
         let h1 = write_tree(&repo, &tree).unwrap();
@@ -171,8 +171,8 @@ mod tests {
         let (_dir, repo) = test_repo();
 
         let entries = vec![
-            TreeEntry::new("regular", EntryKind::regular(Hash::ZERO, 100)),
-            TreeEntry::new("symlink", EntryKind::symlink(Hash::ZERO)),
+            TreeEntry::new("regular", EntryKind::regular(Hash::ZERO, 100, vec![])),
+            TreeEntry::new("symlink", EntryKind::symlink(Hash::ZERO, vec![])),
             TreeEntry::new("dir", EntryKind::directory(Hash::ZERO, 1000, 1000, 0o755)),
             TreeEntry::new(
                 "block",

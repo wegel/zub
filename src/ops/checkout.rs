@@ -3,15 +3,15 @@ use std::path::Path;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::fs::{
-    apply_metadata, create_block_device, create_char_device, create_fifo, create_hardlink,
-    create_socket_placeholder, create_symlink, read_xattrs, write_sparse_file,
+    apply_metadata_graceful, create_block_device, create_char_device, create_fifo,
+    create_hardlink, create_socket_placeholder, create_symlink, write_sparse_file,
     CheckoutHardlinkTracker,
 };
 use crate::hash::Hash;
 use crate::object::{blob_path, read_blob, read_commit, read_tree};
 use crate::refs::resolve_ref;
 use crate::repo::Repo;
-use crate::types::{EntryKind, Tree};
+use crate::types::{EntryKind, Tree, Xattr};
 
 /// checkout options
 #[derive(Clone)]
@@ -132,14 +132,17 @@ fn checkout_tree(
             }
 
             EntryKind::Regular {
-                hash, sparse_map, ..
+                hash,
+                sparse_map,
+                xattrs,
+                ..
             } => {
-                checkout_regular_file(repo, &entry_path, hash, sparse_map.as_deref(), opts)?;
+                checkout_regular_file(repo, &entry_path, hash, sparse_map.as_deref(), xattrs, opts)?;
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
-            EntryKind::Symlink { hash } => {
-                checkout_symlink(repo, &entry_path, hash)?;
+            EntryKind::Symlink { hash, xattrs } => {
+                checkout_symlink(repo, &entry_path, hash, xattrs)?;
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
@@ -163,7 +166,7 @@ fn checkout_tree(
                 )?;
 
                 // apply directory metadata after contents are created
-                apply_metadata(&entry_path, *uid, *gid, *mode, xattrs)?;
+                apply_metadata_graceful(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
 
             EntryKind::BlockDevice {
@@ -227,18 +230,23 @@ fn checkout_tree(
     Ok(())
 }
 
-/// checkout a regular file (hardlink from blob store, or copy for sparse/--copy)
+/// checkout a regular file (hardlink from blob store, or copy for sparse/--copy/xattrs)
 fn checkout_regular_file(
     repo: &Repo,
     dest: &Path,
     hash: &Hash,
     sparse_map: Option<&[crate::types::SparseRegion]>,
+    xattrs: &[Xattr],
     opts: &CheckoutOptions,
 ) -> Result<()> {
     // remove existing
     if dest.exists() {
         fs::remove_file(dest).with_path(dest)?;
     }
+
+    // can only hardlink if no xattrs (since blob no longer stores xattrs)
+    // and no sparse map to preserve
+    let can_hardlink = opts.hardlink && xattrs.is_empty() && sparse_map.is_none();
 
     match sparse_map {
         Some(regions) if !regions.is_empty() && opts.preserve_sparse => {
@@ -247,8 +255,8 @@ fn checkout_regular_file(
             let total_size: u64 = regions.iter().map(|r| r.end()).max().unwrap_or(0);
             write_sparse_file(dest, &data, regions, total_size)?;
 
-            // apply full metadata from blob (uid, gid, mode, xattrs)
-            apply_blob_metadata(repo, hash, dest)?;
+            // apply metadata from blob (uid, gid, mode) and xattrs from tree
+            apply_blob_metadata_with_xattrs(repo, hash, dest, xattrs)?;
         }
 
         Some([]) => {
@@ -256,50 +264,54 @@ fn checkout_regular_file(
             fs::write(dest, b"").with_path(dest)?;
         }
 
-        _ if opts.hardlink => {
-            // non-sparse with hardlink: hardlink from blob store
+        _ if can_hardlink => {
+            // non-sparse with hardlink and no xattrs: hardlink from blob store
             let blob = blob_path(repo, hash);
             fs::hard_link(&blob, dest).with_path(dest)?;
-            // metadata comes along with the hardlink (shared inode)
+            // metadata (uid, gid, mode) comes along with the hardlink (shared inode)
+            // note: no xattrs to apply since we only hardlink when xattrs is empty
         }
 
         _ => {
-            // copy mode (--copy flag or sparse without preserve_sparse)
+            // copy mode (--copy flag, has xattrs, or sparse without preserve_sparse)
             let blob = blob_path(repo, hash);
             fs::copy(&blob, dest).with_path(dest)?;
 
-            // apply full metadata from blob (fs::copy only copies content and basic perms)
-            apply_blob_metadata(repo, hash, dest)?;
+            // apply metadata from blob (uid, gid, mode) and xattrs from tree
+            apply_blob_metadata_with_xattrs(repo, hash, dest, xattrs)?;
         }
     }
 
     Ok(())
 }
 
-/// apply metadata (uid, gid, mode, xattrs) from a blob file to a destination path
-fn apply_blob_metadata(repo: &Repo, hash: &Hash, dest: &Path) -> Result<()> {
+/// apply metadata (uid, gid, mode from blob file, xattrs from tree) to a destination path
+fn apply_blob_metadata_with_xattrs(
+    repo: &Repo,
+    hash: &Hash,
+    dest: &Path,
+    xattrs: &[Xattr],
+) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
 
     let blob = blob_path(repo, hash);
     let meta = fs::metadata(&blob).with_path(&blob)?;
-    let xattrs = read_xattrs(&blob)?;
 
-    apply_metadata(dest, meta.uid(), meta.gid(), meta.mode(), &xattrs)
+    apply_metadata_graceful(dest, meta.uid(), meta.gid(), meta.mode(), xattrs)
 }
 
 /// checkout a symlink
-fn checkout_symlink(repo: &Repo, dest: &Path, hash: &Hash) -> Result<()> {
+fn checkout_symlink(repo: &Repo, dest: &Path, hash: &Hash, xattrs: &[Xattr]) -> Result<()> {
     // symlink blob contains the target path as content
     let target_bytes = read_blob(repo, hash)?;
     let target = String::from_utf8_lossy(&target_bytes);
 
-    // read metadata from blob file
+    // read uid/gid from blob file (still stored there), xattrs from tree
     let blob = blob_path(repo, hash);
     let meta = fs::symlink_metadata(&blob).with_path(&blob)?;
-    let xattrs = read_xattrs(&blob)?;
 
     use std::os::unix::fs::MetadataExt;
-    create_symlink(dest, &target, meta.uid(), meta.gid(), &xattrs)?;
+    create_symlink(dest, &target, meta.uid(), meta.gid(), xattrs)?;
 
     Ok(())
 }

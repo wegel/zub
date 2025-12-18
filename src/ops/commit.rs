@@ -202,8 +202,8 @@ fn commit_tree_parallel(
                         write_blob(repo, &content, inside_uid, inside_gid, meta.mode, &xattrs)?;
 
                     match sparse_map {
-                        Some(map) => EntryKind::sparse(hash, meta.size, map),
-                        None => EntryKind::regular(hash, meta.size),
+                        Some(map) => EntryKind::sparse(hash, meta.size, map, xattrs),
+                        None => EntryKind::regular(hash, meta.size, xattrs),
                     }
                 }
 
@@ -219,7 +219,7 @@ fn commit_tree_parallel(
                         SYMLINK_MODE,
                         &xattrs,
                     )?;
-                    EntryKind::symlink(hash)
+                    EntryKind::symlink(hash, xattrs)
                 }
 
                 FileType::BlockDevice => {

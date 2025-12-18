@@ -228,7 +228,7 @@ fn check_tree(
                             });
                         }
                     }
-                    EntryKind::Symlink { hash } => {
+                    EntryKind::Symlink { hash, .. } => {
                         reachable_blobs.insert(*hash);
                         if !crate::object::blob_exists(repo, hash) {
                             report.missing_objects.push(MissingObject {

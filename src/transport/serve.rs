@@ -280,7 +280,7 @@ fn collect_tree_objects(
     let tree = read_tree(repo, tree_hash)?;
     for entry in tree.entries() {
         match &entry.kind {
-            EntryKind::Regular { hash, .. } | EntryKind::Symlink { hash } => {
+            EntryKind::Regular { hash, .. } | EntryKind::Symlink { hash, .. } => {
                 if !visited.contains(hash) {
                     visited.insert(*hash);
                     objects.push(("blob".to_string(), *hash));

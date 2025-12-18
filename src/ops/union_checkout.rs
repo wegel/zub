@@ -3,15 +3,16 @@ use std::path::Path;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::fs::{
-    apply_metadata, create_block_device, create_char_device, create_fifo, create_hardlink,
-    create_socket_placeholder, create_symlink, write_sparse_file, CheckoutHardlinkTracker,
+    apply_metadata_graceful, create_block_device, create_char_device, create_fifo,
+    create_hardlink, create_socket_placeholder, create_symlink, write_sparse_file,
+    CheckoutHardlinkTracker,
 };
 use crate::hash::Hash;
 use crate::object::{blob_path, read_blob, read_commit, read_tree};
 use crate::ops::union::ConflictResolution;
 use crate::refs::resolve_ref;
 use crate::repo::Repo;
-use crate::types::{EntryKind, Tree};
+use crate::types::{EntryKind, Tree, Xattr};
 
 /// checkout options for union checkout
 #[derive(Default, Clone)]
@@ -134,7 +135,10 @@ fn checkout_tree_union(
             }
 
             EntryKind::Regular {
-                hash, sparse_map, ..
+                hash,
+                sparse_map,
+                xattrs,
+                ..
             } => {
                 if entry_path.exists() {
                     // check if it's a directory (type conflict)
@@ -157,11 +161,11 @@ fn checkout_tree_union(
                     }
                 }
 
-                checkout_file(repo, &entry_path, hash, sparse_map.as_deref())?;
+                checkout_file(repo, &entry_path, hash, sparse_map.as_deref(), xattrs)?;
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
-            EntryKind::Symlink { hash } => {
+            EntryKind::Symlink { hash, xattrs } => {
                 if entry_path.exists() || entry_path.symlink_metadata().is_ok() {
                     if entry_path.is_dir() {
                         return Err(Error::UnionTypeConflict {
@@ -182,7 +186,7 @@ fn checkout_tree_union(
                     }
                 }
 
-                checkout_symlink(repo, &entry_path, hash)?;
+                checkout_symlink(repo, &entry_path, hash, xattrs)?;
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
@@ -214,7 +218,7 @@ fn checkout_tree_union(
                 )?;
 
                 // apply directory metadata
-                apply_metadata(&entry_path, *uid, *gid, *mode, xattrs)?;
+                apply_metadata_graceful(&entry_path, *uid, *gid, *mode, xattrs)?;
             }
 
             EntryKind::BlockDevice {
@@ -333,29 +337,45 @@ fn checkout_file(
     dest: &Path,
     hash: &Hash,
     sparse_map: Option<&[crate::types::SparseRegion]>,
+    xattrs: &[Xattr],
 ) -> Result<()> {
+    // can only hardlink if no xattrs (since blob no longer stores xattrs)
+    let can_hardlink = xattrs.is_empty() && sparse_map.is_none();
+
     match sparse_map {
         Some(regions) if !regions.is_empty() => {
             let data = read_blob(repo, hash)?;
             let total_size: u64 = regions.iter().map(|r| r.end()).max().unwrap_or(0);
             write_sparse_file(dest, &data, regions, total_size)?;
 
+            // apply metadata from blob and xattrs from tree
             let blob = blob_path(repo, hash);
             let meta = fs::metadata(&blob).with_path(&blob)?;
-            fs::set_permissions(dest, meta.permissions()).with_path(dest)?;
+            use std::os::unix::fs::MetadataExt;
+            apply_metadata_graceful(dest, meta.uid(), meta.gid(), meta.mode(), xattrs)?;
         }
         Some(_) => {
             fs::write(dest, b"").with_path(dest)?;
         }
-        None => {
+        _ if can_hardlink => {
             let blob = blob_path(repo, hash);
             fs::hard_link(&blob, dest).with_path(dest)?;
+        }
+        _ => {
+            // copy mode (has xattrs)
+            let blob = blob_path(repo, hash);
+            fs::copy(&blob, dest).with_path(dest)?;
+
+            // apply metadata from blob and xattrs from tree
+            let meta = fs::metadata(&blob).with_path(&blob)?;
+            use std::os::unix::fs::MetadataExt;
+            apply_metadata_graceful(dest, meta.uid(), meta.gid(), meta.mode(), xattrs)?;
         }
     }
     Ok(())
 }
 
-fn checkout_symlink(repo: &Repo, dest: &Path, hash: &Hash) -> Result<()> {
+fn checkout_symlink(repo: &Repo, dest: &Path, hash: &Hash, xattrs: &[Xattr]) -> Result<()> {
     let target_bytes = read_blob(repo, hash)?;
     let target = String::from_utf8_lossy(&target_bytes);
 
@@ -363,7 +383,7 @@ fn checkout_symlink(repo: &Repo, dest: &Path, hash: &Hash) -> Result<()> {
     let meta = fs::symlink_metadata(&blob).with_path(&blob)?;
 
     use std::os::unix::fs::MetadataExt;
-    create_symlink(dest, &target, meta.uid(), meta.gid(), &[])?;
+    create_symlink(dest, &target, meta.uid(), meta.gid(), xattrs)?;
     Ok(())
 }
 

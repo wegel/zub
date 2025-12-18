@@ -53,7 +53,7 @@ pub fn export_path(
         EntryKind::Regular {
             hash, sparse_map, ..
         } => export_regular(repo, dest, &hash, sparse_map.as_deref(), &opts),
-        EntryKind::Symlink { hash } => export_symlink(repo, dest, &hash, &opts),
+        EntryKind::Symlink { hash, .. } => export_symlink(repo, dest, &hash, &opts),
         EntryKind::Hardlink { target_path } => {
             let target_norm = target_path.trim_start_matches('/');
             let target = resolve_entry(repo, &tree, target_norm)?;
@@ -61,7 +61,7 @@ pub fn export_path(
                 EntryKind::Regular {
                     hash, sparse_map, ..
                 } => export_regular(repo, dest, &hash, sparse_map.as_deref(), &opts),
-                EntryKind::Symlink { hash } => export_symlink(repo, dest, &hash, &opts),
+                EntryKind::Symlink { hash, .. } => export_symlink(repo, dest, &hash, &opts),
                 _ => Err(Error::InvalidObjectType(target.type_name().to_string())),
             }
         }
