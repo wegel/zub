@@ -21,7 +21,7 @@ pub use export::{export_path, ExportOptions};
 pub use fsck::{fsck, CorruptObject, FsckReport, MissingObject, ObjectType};
 pub use gc::{gc, GcStats};
 pub use log::{log, LogEntry};
-pub use ls_tree::{ls_tree, ls_tree_recursive, LsTreeEntry};
+pub use ls_tree::{ls_tree, ls_tree_recursive, LsTreeEntry, LsTreeOptions};
 pub use map::{map, MapOptions, MapStats};
 pub use stats::{du, du_tree, PathSize, RefSize, RepoStats, stats};
 pub use truncate::{truncate_history, TruncateStats};

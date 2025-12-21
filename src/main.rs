@@ -9,8 +9,8 @@ use std::io::{self, Write};
 
 use zub::ops::{
     checkout, commit, diff, fsck, gc, log, ls_tree, ls_tree_recursive, map, union_checkout,
-    union_trees, CheckoutOptions, ConflictResolution, MapOptions, UnionCheckoutOptions,
-    UnionOptions,
+    union_trees, CheckoutOptions, ConflictResolution, LsTreeOptions, MapOptions,
+    UnionCheckoutOptions, UnionOptions,
 };
 use zub::transport::{pull_local, push_local, PullOptions, PushOptions};
 use zub::{read_blob, read_commit, read_tree, Hash, Repo};
@@ -122,6 +122,14 @@ enum Commands {
         /// list recursively
         #[arg(short, long)]
         recursive: bool,
+
+        /// long format (permissions, uid, gid, size)
+        #[arg(short, long)]
+        long: bool,
+
+        /// human-readable sizes (with -l)
+        #[arg(short = 'H', long)]
+        human: bool,
     },
 
     /// show differences between two refs
@@ -382,17 +390,20 @@ fn run(cli: Cli) -> zub::Result<()> {
             ref_name,
             path,
             recursive,
+            long,
+            human,
         } => {
             let repo = Repo::open(&repo_path)?;
+            let opts = LsTreeOptions { long, human };
 
             let entries = if recursive {
-                ls_tree_recursive(&repo, &ref_name)?
+                ls_tree_recursive(&repo, &ref_name, &opts)?
             } else {
-                ls_tree(&repo, &ref_name, path.as_deref())?
+                ls_tree(&repo, &ref_name, path.as_deref(), &opts)?
             };
 
             for entry in entries {
-                println!("{}", entry);
+                println!("{}", entry.format(&opts));
             }
         }
 
