@@ -58,7 +58,8 @@ pub use object::{
 };
 pub use ops::{du, du_tree, stats, truncate_history, PathSize, RefSize, RepoStats, TruncateStats};
 pub use refs::{
-    artifact_ref_exists, delete_ref, delete_refs_matching, list_artifact_refs, list_refs,
+    artifact_ref_exists, delete_artifact_ref, delete_artifact_refs_matching, delete_ref,
+    delete_refs_matching, list_artifact_refs, list_artifact_refs_matching, list_refs,
     list_refs_matching, read_artifact_ref, read_ref, ref_exists, resolve_ref, write_artifact_ref,
     write_ref,
 };

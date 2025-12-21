@@ -283,6 +283,12 @@ enum Commands {
         pattern: String,
     },
 
+    /// delete artifact refs matching a glob pattern
+    DeleteArtifacts {
+        /// glob pattern (e.g. "x86_64/*/foo/*")
+        pattern: String,
+    },
+
     /// show contents of an object
     ///
     /// Examples:
@@ -722,6 +728,18 @@ fn run(cli: Cli) -> zub::Result<()> {
             } else {
                 for r in deleted {
                     println!("deleted ref {}", r);
+                }
+            }
+        }
+
+        Commands::DeleteArtifacts { pattern } => {
+            let repo = Repo::open(&repo_path)?;
+            let deleted = zub::delete_artifact_refs_matching(&repo, &pattern)?;
+            if deleted.is_empty() {
+                println!("no artifact refs matched pattern {}", pattern);
+            } else {
+                for r in deleted {
+                    println!("deleted artifact ref {}", r);
                 }
             }
         }
