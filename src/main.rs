@@ -284,12 +284,19 @@ enum Commands {
     },
 
     /// show contents of an object
+    ///
+    /// Examples:
+    ///   zub cat-file myref:path/to/file     # show file contents
+    ///   zub cat-file myref:path/to/dir      # list directory
+    ///   zub cat-file myref                  # show commit info
+    ///   zub cat-file -t blob HASH           # raw hash access
     CatFile {
-        /// object type (blob, tree, commit)
-        object_type: String,
+        /// object spec: ref:path, ref, or hash (with -t)
+        spec: String,
 
-        /// object hash
-        object: String,
+        /// object type for raw hash access (blob, tree, commit)
+        #[arg(short = 't', long = "type")]
+        object_type: Option<String>,
     },
 
     /// resolve a ref to a hash
@@ -719,41 +726,61 @@ fn run(cli: Cli) -> zub::Result<()> {
             }
         }
 
-        Commands::CatFile {
-            object_type,
-            object,
-        } => {
+        Commands::CatFile { spec, object_type } => {
             let repo = Repo::open(&repo_path)?;
-            let hash = Hash::from_hex(&object)?;
 
-            match object_type.as_str() {
-                "blob" => {
-                    let data = read_blob(&repo, &hash)?;
-                    io::stdout().write_all(&data).map_err(|e| zub::Error::Io {
-                        path: "stdout".into(),
-                        source: e,
-                    })?;
-                }
-                "tree" => {
-                    let tree = read_tree(&repo, &hash)?;
-                    for entry in tree.entries() {
-                        println!("{} {}", entry.kind.type_name(), entry.name);
+            if let Some(obj_type) = object_type {
+                // raw hash mode: -t blob HASH
+                let hash = Hash::from_hex(&spec)?;
+                match obj_type.as_str() {
+                    "blob" => {
+                        let data = read_blob(&repo, &hash)?;
+                        io::stdout().write_all(&data).map_err(|e| zub::Error::Io {
+                            path: "stdout".into(),
+                            source: e,
+                        })?;
+                    }
+                    "tree" => {
+                        let tree = read_tree(&repo, &hash)?;
+                        for entry in tree.entries() {
+                            println!("{} {}", entry.kind.type_name(), entry.name);
+                        }
+                    }
+                    "commit" => {
+                        let commit = read_commit(&repo, &hash)?;
+                        println!("tree {}", commit.tree);
+                        for parent in &commit.parents {
+                            println!("parent {}", parent);
+                        }
+                        println!("author {}", commit.author);
+                        println!("timestamp {}", commit.timestamp);
+                        println!();
+                        println!("{}", commit.message);
+                    }
+                    _ => {
+                        return Err(zub::Error::InvalidObjectType(obj_type));
                     }
                 }
-                "commit" => {
-                    let commit = read_commit(&repo, &hash)?;
-                    println!("tree {}", commit.tree);
-                    for parent in &commit.parents {
-                        println!("parent {}", parent);
-                    }
-                    println!("author {}", commit.author);
-                    println!("timestamp {}", commit.timestamp);
-                    println!();
-                    println!("{}", commit.message);
+            } else if let Some((ref_name, path)) = spec.split_once(':') {
+                // ref:path mode
+                let commit_hash = zub::resolve_ref(&repo, ref_name)?;
+                let commit = read_commit(&repo, &commit_hash)?;
+                let tree = read_tree(&repo, &commit.tree)?;
+
+                // walk the path
+                cat_file_path(&repo, &tree, path)?;
+            } else {
+                // just a ref - show commit
+                let commit_hash = zub::resolve_ref(&repo, &spec)?;
+                let commit = read_commit(&repo, &commit_hash)?;
+                println!("tree {}", commit.tree);
+                for parent in &commit.parents {
+                    println!("parent {}", parent);
                 }
-                _ => {
-                    return Err(zub::Error::InvalidObjectType(object_type));
-                }
+                println!("author {}", commit.author);
+                println!("timestamp {}", commit.timestamp);
+                println!();
+                println!("{}", commit.message);
             }
         }
 
@@ -825,4 +852,79 @@ fn parse_conflict_resolution(s: &str) -> zub::Result<ConflictResolution> {
 fn run_remote_helper(repo_path: &Path) -> zub::Result<()> {
     let repo = Repo::open(repo_path)?;
     zub::transport::serve_remote(&repo)
+}
+
+/// cat-file helper: walk tree path and output contents
+fn cat_file_path(repo: &Repo, tree: &zub::Tree, path: &str) -> zub::Result<()> {
+    use zub::EntryKind;
+
+    let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if components.is_empty() {
+        // empty path = list root tree
+        for entry in tree.entries() {
+            println!("{} {}", entry.kind.type_name(), entry.name);
+        }
+        return Ok(());
+    }
+
+    let mut current_tree = tree.clone();
+
+    for (i, component) in components.iter().enumerate() {
+        let entry = current_tree
+            .get(component)
+            .ok_or_else(|| zub::Error::PathNotFound(path.to_string()))?;
+
+        let is_last = i == components.len() - 1;
+
+        match &entry.kind {
+            EntryKind::Directory { hash, .. } => {
+                let subtree = read_tree(repo, hash)?;
+                if is_last {
+                    // list directory contents
+                    for e in subtree.entries() {
+                        println!("{} {}", e.kind.type_name(), e.name);
+                    }
+                    return Ok(());
+                }
+                current_tree = subtree;
+            }
+            EntryKind::Regular { hash, .. } => {
+                if !is_last {
+                    return Err(zub::Error::PathNotFound(path.to_string()));
+                }
+                let data = read_blob(repo, hash)?;
+                io::stdout().write_all(&data).map_err(|e| zub::Error::Io {
+                    path: "stdout".into(),
+                    source: e,
+                })?;
+                return Ok(());
+            }
+            EntryKind::Symlink { hash, .. } => {
+                if !is_last {
+                    return Err(zub::Error::PathNotFound(path.to_string()));
+                }
+                let data = read_blob(repo, hash)?;
+                let target = String::from_utf8_lossy(&data);
+                println!("{}", target);
+                return Ok(());
+            }
+            EntryKind::Hardlink { target_path } => {
+                if !is_last {
+                    return Err(zub::Error::PathNotFound(path.to_string()));
+                }
+                // follow hardlink and output that file
+                println!("-> {}", target_path);
+                return Ok(());
+            }
+            _ => {
+                if !is_last {
+                    return Err(zub::Error::PathNotFound(path.to_string()));
+                }
+                println!("{}", entry.kind.type_name());
+                return Ok(());
+            }
+        }
+    }
+
+    Ok(())
 }
