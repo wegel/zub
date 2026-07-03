@@ -1,6 +1,7 @@
 //! local file transport for repository operations
 
-use std::fs;
+use std::fs::{self, Permissions};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use walkdir::WalkDir;
@@ -59,12 +60,23 @@ fn copy_object(
     if fs::hard_link(&src_path, &dst_path).is_ok() {
         stats.hardlinked += 1;
     } else {
-        let content = fs::read(&src_path).with_path(&src_path)?;
-        stats.bytes_transferred += content.len() as u64;
-        fs::write(&dst_path, &content).with_path(&dst_path)?;
-        stats.copied += 1;
+        copy_object_file(&src_path, &dst_path, stats)?;
     }
 
+    Ok(())
+}
+
+fn copy_object_file(src_path: &Path, dst_path: &Path, stats: &mut TransferStats) -> Result<()> {
+    let content = fs::read(src_path).with_path(src_path)?;
+    let mode = fs::metadata(src_path)
+        .with_path(src_path)?
+        .permissions()
+        .mode()
+        & 0o7777;
+    stats.bytes_transferred += content.len() as u64;
+    fs::write(dst_path, &content).with_path(dst_path)?;
+    fs::set_permissions(dst_path, Permissions::from_mode(mode)).with_path(dst_path)?;
+    stats.copied += 1;
     Ok(())
 }
 
@@ -194,5 +206,23 @@ mod tests {
         assert_eq!(objects.blobs.len(), dst_objects.blobs.len());
         assert_eq!(objects.trees.len(), dst_objects.trees.len());
         assert_eq!(objects.commits.len(), dst_objects.commits.len());
+    }
+
+    #[test]
+    fn test_copy_object_file_preserves_object_modes() {
+        let dir = tempdir().unwrap();
+
+        let src_blob = dir.path().join("src-object");
+        let dst_blob = dir.path().join("dst-object");
+        fs::write(&src_blob, "content").unwrap();
+        fs::set_permissions(&src_blob, Permissions::from_mode(0o755)).unwrap();
+
+        let mut stats = TransferStats::default();
+        copy_object_file(&src_blob, &dst_blob, &mut stats).unwrap();
+        assert_eq!(stats.bytes_transferred, 7);
+        assert_eq!(stats.copied, 1);
+
+        let copied_mode = fs::metadata(dst_blob).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(copied_mode, 0o755);
     }
 }
