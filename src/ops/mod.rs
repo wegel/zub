@@ -1,5 +1,9 @@
 //! high-level operations on zub repositories
 
+use crate::error::{Error, Result};
+use crate::namespace::inside_to_outside;
+use crate::repo::Repo;
+
 mod checkout;
 mod commit;
 mod diff;
@@ -27,3 +31,12 @@ pub use stats::{du, du_tree, PathSize, RefSize, RepoStats, stats};
 pub use truncate::{truncate_history, TruncateStats};
 pub use union::{union as union_trees, ConflictResolution, UnionOptions};
 pub use union_checkout::{checkout_union as union_checkout, UnionCheckoutOptions};
+
+/// map logical tree-entry ownership to the repository's on-disk namespace.
+fn map_entry_ownership(repo: &Repo, uid: u32, gid: u32) -> Result<(u32, u32)> {
+    let namespace = &repo.config().namespace;
+    let outside_uid = inside_to_outside(uid, &namespace.uid_map).ok_or(Error::UnmappedUid(uid))?;
+    let outside_gid = inside_to_outside(gid, &namespace.gid_map).ok_or(Error::UnmappedGid(gid))?;
+
+    Ok((outside_uid, outside_gid))
+}

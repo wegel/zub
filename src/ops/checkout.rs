@@ -3,9 +3,8 @@ use std::path::Path;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::fs::{
-    apply_metadata_graceful, create_block_device, create_char_device, create_fifo,
-    create_hardlink, create_socket_placeholder, create_symlink, write_sparse_file,
-    CheckoutHardlinkTracker,
+    apply_metadata_graceful, create_block_device, create_char_device, create_fifo, create_hardlink,
+    create_socket_placeholder, create_symlink, write_sparse_file, CheckoutHardlinkTracker,
 };
 use crate::hash::Hash;
 use crate::object::{blob_path, read_blob, read_commit, read_tree};
@@ -137,7 +136,14 @@ fn checkout_tree(
                 xattrs,
                 ..
             } => {
-                checkout_regular_file(repo, &entry_path, hash, sparse_map.as_deref(), xattrs, opts)?;
+                checkout_regular_file(
+                    repo,
+                    &entry_path,
+                    hash,
+                    sparse_map.as_deref(),
+                    xattrs,
+                    opts,
+                )?;
                 hardlink_tracker.record(&logical_path, entry_path);
             }
 
@@ -166,7 +172,8 @@ fn checkout_tree(
                 )?;
 
                 // apply directory metadata after contents are created
-                apply_metadata_graceful(&entry_path, *uid, *gid, *mode, xattrs)?;
+                let (outside_uid, outside_gid) = super::map_entry_ownership(repo, *uid, *gid)?;
+                apply_metadata_graceful(&entry_path, outside_uid, outside_gid, *mode, xattrs)?;
             }
 
             EntryKind::BlockDevice {
@@ -177,7 +184,16 @@ fn checkout_tree(
                 mode,
                 xattrs,
             } => {
-                match create_block_device(&entry_path, *major, *minor, *uid, *gid, *mode, xattrs) {
+                let (outside_uid, outside_gid) = super::map_entry_ownership(repo, *uid, *gid)?;
+                match create_block_device(
+                    &entry_path,
+                    *major,
+                    *minor,
+                    outside_uid,
+                    outside_gid,
+                    *mode,
+                    xattrs,
+                ) {
                     Ok(()) => {}
                     Err(Error::DeviceNodePermission(_)) => {
                         eprintln!(
@@ -196,16 +212,27 @@ fn checkout_tree(
                 gid,
                 mode,
                 xattrs,
-            } => match create_char_device(&entry_path, *major, *minor, *uid, *gid, *mode, xattrs) {
-                Ok(()) => {}
-                Err(Error::DeviceNodePermission(_)) => {
-                    eprintln!(
-                        "warning: cannot create char device {:?} without privileges, skipping",
-                        entry_path
-                    );
+            } => {
+                let (outside_uid, outside_gid) = super::map_entry_ownership(repo, *uid, *gid)?;
+                match create_char_device(
+                    &entry_path,
+                    *major,
+                    *minor,
+                    outside_uid,
+                    outside_gid,
+                    *mode,
+                    xattrs,
+                ) {
+                    Ok(()) => {}
+                    Err(Error::DeviceNodePermission(_)) => {
+                        eprintln!(
+                            "warning: cannot create char device {:?} without privileges, skipping",
+                            entry_path
+                        );
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(e) => return Err(e),
-            },
+            }
 
             EntryKind::Fifo {
                 uid,
@@ -213,7 +240,8 @@ fn checkout_tree(
                 mode,
                 xattrs,
             } => {
-                create_fifo(&entry_path, *uid, *gid, *mode, xattrs)?;
+                let (outside_uid, outside_gid) = super::map_entry_ownership(repo, *uid, *gid)?;
+                create_fifo(&entry_path, outside_uid, outside_gid, *mode, xattrs)?;
             }
 
             EntryKind::Socket {
@@ -222,7 +250,8 @@ fn checkout_tree(
                 mode,
                 xattrs,
             } => {
-                create_socket_placeholder(&entry_path, *uid, *gid, *mode, xattrs)?;
+                let (outside_uid, outside_gid) = super::map_entry_ownership(repo, *uid, *gid)?;
+                create_socket_placeholder(&entry_path, outside_uid, outside_gid, *mode, xattrs)?;
             }
         }
     }
@@ -319,6 +348,7 @@ fn checkout_symlink(repo: &Repo, dest: &Path, hash: &Hash, xattrs: &[Xattr]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::namespace::{MapEntry, NsConfig};
     use crate::ops::commit::commit;
     use std::os::unix::fs::MetadataExt;
     use tempfile::tempdir;
@@ -327,6 +357,20 @@ mod tests {
         let dir = tempdir().unwrap();
         let repo_path = dir.path().join("repo");
         let repo = Repo::init(&repo_path).unwrap();
+        (dir, repo)
+    }
+
+    fn test_repo_with_remapped_ownership() -> (tempfile::TempDir, Repo) {
+        let (dir, mut repo) = test_repo();
+        let outside_uid = nix::unistd::getuid().as_raw();
+        let outside_gid = nix::unistd::getgid().as_raw();
+
+        repo.config_mut().namespace = NsConfig {
+            uid_map: vec![MapEntry::new(4242, outside_uid, 1)],
+            gid_map: vec![MapEntry::new(4343, outside_gid, 1)],
+        };
+        repo.save_config().unwrap();
+
         (dir, repo)
     }
 
@@ -393,6 +437,23 @@ mod tests {
         assert!(target.join("a/b/deep.txt").exists());
         let content = fs::read_to_string(target.join("a/b/deep.txt")).unwrap();
         assert_eq!(content, "deep content");
+    }
+
+    #[test]
+    fn test_checkout_maps_directory_ownership_to_repository_namespace() {
+        let (dir, repo) = test_repo_with_remapped_ownership();
+
+        let source = dir.path().join("source");
+        fs::create_dir_all(source.join("owned")).unwrap();
+        fs::write(source.join("owned/file.txt"), "content").unwrap();
+        commit(&repo, &source, "mapped", None, None).unwrap();
+
+        let target = dir.path().join("target");
+        checkout(&repo, "mapped", &target, Default::default()).unwrap();
+
+        let metadata = fs::metadata(target.join("owned")).unwrap();
+        assert_eq!(metadata.uid(), nix::unistd::getuid().as_raw());
+        assert_eq!(metadata.gid(), nix::unistd::getgid().as_raw());
     }
 
     #[test]
