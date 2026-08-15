@@ -91,8 +91,12 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
 
-        /// use copy instead of hardlinks
-        #[arg(long)]
+        /// share immutable files with the object store using hardlinks
+        #[arg(long, conflicts_with = "copy")]
+        hardlink: bool,
+
+        /// use copies (the default; retained for command compatibility)
+        #[arg(long, hide = true, conflicts_with = "hardlink")]
         copy: bool,
 
         /// preserve sparse file holes
@@ -178,8 +182,12 @@ enum Commands {
         #[arg(long, default_value = "error")]
         on_conflict: String,
 
-        /// use copy instead of hardlinks
-        #[arg(long)]
+        /// share immutable files with the object store using hardlinks
+        #[arg(long, conflicts_with = "copy")]
+        hardlink: bool,
+
+        /// use copies (the default; retained for command compatibility)
+        #[arg(long, hide = true, conflicts_with = "hardlink")]
         copy: bool,
     },
 
@@ -374,13 +382,14 @@ fn run(cli: Cli) -> zub::Result<()> {
             ref_name,
             destination,
             force,
+            hardlink,
             copy,
             sparse,
         } => {
             let repo = Repo::open(&repo_path)?;
             let options = CheckoutOptions {
                 force,
-                hardlink: !copy,
+                hardlink: hardlink && !copy,
                 preserve_sparse: sparse,
             };
             checkout(&repo, &ref_name, &destination, options)?;
@@ -459,6 +468,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             destination,
             force,
             on_conflict,
+            hardlink,
             copy,
         } => {
             let repo = Repo::open(&repo_path)?;
@@ -468,7 +478,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             let options = UnionCheckoutOptions {
                 force,
                 on_conflict: resolution,
-                hardlink: !copy,
+                hardlink: hardlink && !copy,
             };
             union_checkout(&repo, &ref_strs, &destination, options)?;
             println!(

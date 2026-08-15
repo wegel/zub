@@ -13,24 +13,17 @@ use crate::repo::Repo;
 use crate::types::{EntryKind, Tree, Xattr};
 
 /// checkout options
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct CheckoutOptions {
     /// overwrite existing files
     pub force: bool,
-    /// use hardlinks when possible (default: true)
+    /// use hardlinks when possible (default: false)
+    ///
+    /// Hardlinked checkouts share inodes with the object store. Callers must
+    /// treat them as immutable or they can corrupt stored blobs.
     pub hardlink: bool,
     /// preserve sparse file holes
     pub preserve_sparse: bool,
-}
-
-impl Default for CheckoutOptions {
-    fn default() -> Self {
-        Self {
-            force: false,
-            hardlink: true,
-            preserve_sparse: false,
-        }
-    }
 }
 
 /// checkout a ref to a target directory
@@ -394,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_checkout_uses_hardlinks() {
+    fn test_checkout_uses_hardlinks_when_requested() {
         let (dir, repo) = test_repo();
 
         let source = dir.path().join("source");
@@ -403,7 +396,16 @@ mod tests {
         let commit_hash = commit(&repo, &source, "test", None, None).unwrap();
 
         let target = dir.path().join("target");
-        checkout(&repo, "test", &target, Default::default()).unwrap();
+        checkout(
+            &repo,
+            "test",
+            &target,
+            CheckoutOptions {
+                hardlink: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // get blob hash from commit
         let commit_obj = read_commit(&repo, &commit_hash).unwrap();
@@ -420,6 +422,58 @@ mod tests {
         } else {
             panic!("expected regular file");
         }
+    }
+
+    #[test]
+    fn test_default_checkout_can_be_modified_without_corrupting_store() {
+        let (dir, repo) = test_repo();
+
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file.txt"), "stored content").unwrap();
+        commit(&repo, &source, "test", None, None).unwrap();
+
+        let target = dir.path().join("target");
+        checkout(&repo, "test", &target, Default::default()).unwrap();
+        fs::write(target.join("file.txt"), "changed checkout").unwrap();
+
+        let second_target = dir.path().join("second-target");
+        checkout(&repo, "test", &second_target, Default::default()).unwrap();
+        assert_eq!(
+            fs::read_to_string(second_target.join("file.txt")).unwrap(),
+            "stored content"
+        );
+    }
+
+    #[test]
+    fn test_commit_repairs_blob_changed_through_hardlink_checkout() {
+        let (dir, repo) = test_repo();
+
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file.txt"), "stored content").unwrap();
+        commit(&repo, &source, "test", None, None).unwrap();
+
+        let target = dir.path().join("target");
+        checkout(
+            &repo,
+            "test",
+            &target,
+            CheckoutOptions {
+                hardlink: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fs::write(target.join("file.txt"), "corrupt").unwrap();
+
+        commit(&repo, &source, "test", None, None).unwrap();
+        let repaired = dir.path().join("repaired");
+        checkout(&repo, "test", &repaired, Default::default()).unwrap();
+        assert_eq!(
+            fs::read_to_string(repaired.join("file.txt")).unwrap(),
+            "stored content"
+        );
     }
 
     #[test]

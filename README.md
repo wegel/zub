@@ -9,7 +9,7 @@ A git-like content-addressed store for filesystem trees.
 
 zub stores directory trees as content-addressed objects (blobs, trees, commits) with full metadata preservation: ownership, permissions, xattrs, sparse files, and hardlinks.
 
-Similar to [ostree's bare repo mode](https://ostreedev.github.io/ostree/repo/), blobs are stored uncompressed with metadata applied directly to the files, enabling hardlink-based checkout for zero-copy extraction.
+Similar to [ostree's bare repo mode](https://ostreedev.github.io/ostree/repo/), blobs are stored uncompressed with metadata applied directly to the files. Zub copies them by default so callers can safely modify a checkout. Callers that guarantee an immutable checkout can request hardlinks for zero-copy extraction.
 
 ## why
 
@@ -48,8 +48,11 @@ zub init .zub
 # commit a directory tree
 zub commit /some/dir my-ref -m "initial"
 
-# checkout (hardlinks by default)
+# checkout (safe, independently writable copies by default)
 zub checkout my-ref /target/dir
+
+# opt into a shared, immutable hardlink checkout
+zub checkout --hardlink my-ref /target/dir
 
 # view history
 zub log my-ref

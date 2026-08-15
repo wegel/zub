@@ -26,7 +26,7 @@ impl Default for ExportOptions {
     fn default() -> Self {
         Self {
             overwrite: true,
-            hardlink: true,
+            hardlink: false,
             preserve_sparse: false,
         }
     }
@@ -201,13 +201,13 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&dest).unwrap(), "content");
 
-        // hardlink by default
+        // independently writable copy by default
         let commit_obj = read_commit(&repo, &resolve_ref(&repo, "ref1").unwrap()).unwrap();
         let tree = read_tree(&repo, &commit_obj.tree).unwrap();
         let entry = tree.get("file.txt").unwrap();
         if let EntryKind::Regular { hash, .. } = &entry.kind {
             let blob = blob_path(&repo, hash);
-            assert_eq!(
+            assert_ne!(
                 fs::metadata(blob).unwrap().ino(),
                 fs::metadata(dest).unwrap().ino()
             );

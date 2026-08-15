@@ -1,8 +1,9 @@
+use nix::unistd::{Gid, Uid};
 use std::fs::{self, File, Permissions};
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use nix::unistd::{Gid, Uid};
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::hash::{compute_blob_hash, Hash};
@@ -30,17 +31,21 @@ pub fn write_blob(
     let blob_dir = repo.blobs_path().join(&dir);
     let blob_path = blob_dir.join(&file);
 
-    // deduplication: if blob already exists, we're done
-    if blob_path.exists() {
-        return Ok(hash);
-    }
-
     // convert inside uid/gid to outside values for storage
     let ns = &repo.config().namespace;
     let outside_uid =
         inside_to_outside(inside_uid, &ns.uid_map).ok_or(Error::UnmappedUid(inside_uid))?;
     let outside_gid =
         inside_to_outside(inside_gid, &ns.gid_map).ok_or(Error::UnmappedGid(inside_gid))?;
+
+    // A hardlinked checkout may have modified an older store object. Reuse an
+    // existing blob only after its bytes and stored metadata match the hash
+    // inputs. The atomic rename below repairs a mismatching object.
+    if blob_path.exists()
+        && blob_matches_bytes(&blob_path, content, outside_uid, outside_gid, mode)?
+    {
+        return Ok(hash);
+    }
 
     // ensure directory exists
     fs::create_dir_all(&blob_dir).with_path(&blob_dir)?;
@@ -121,18 +126,19 @@ pub fn write_blob_streaming<R: Read>(
     let blob_dir = repo.blobs_path().join(&dir);
     let blob_path = blob_dir.join(&file);
 
-    // dedup check
-    if blob_path.exists() {
-        fs::remove_file(&tmp_path).with_path(&tmp_path)?;
-        return Ok(hash);
-    }
-
     // convert uid/gid
     let ns = &repo.config().namespace;
     let outside_uid =
         inside_to_outside(inside_uid, &ns.uid_map).ok_or(Error::UnmappedUid(inside_uid))?;
     let outside_gid =
         inside_to_outside(inside_gid, &ns.gid_map).ok_or(Error::UnmappedGid(inside_gid))?;
+
+    if blob_path.exists()
+        && blob_matches_file(&blob_path, &tmp_path, outside_uid, outside_gid, mode)?
+    {
+        fs::remove_file(&tmp_path).with_path(&tmp_path)?;
+        return Ok(hash);
+    }
 
     // ensure directory exists
     fs::create_dir_all(&blob_dir).with_path(&blob_dir)?;
@@ -161,6 +167,62 @@ pub fn write_blob_streaming<R: Read>(
     fsync_dir(&blob_dir)?;
 
     Ok(hash)
+}
+
+fn blob_matches_bytes(path: &Path, expected: &[u8], uid: u32, gid: u32, mode: u32) -> Result<bool> {
+    if !blob_metadata_matches(path, expected.len() as u64, uid, gid, mode)? {
+        return Ok(false);
+    }
+
+    let actual = fs::read(path).with_path(path)?;
+    Ok(actual == expected)
+}
+
+fn blob_matches_file(
+    path: &Path,
+    expected_path: &Path,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+) -> Result<bool> {
+    let expected_len = fs::metadata(expected_path).with_path(expected_path)?.len();
+    if !blob_metadata_matches(path, expected_len, uid, gid, mode)? {
+        return Ok(false);
+    }
+
+    let mut actual = File::open(path).with_path(path)?;
+    let mut expected = File::open(expected_path).with_path(expected_path)?;
+    let mut actual_buffer = [0u8; 64 * 1024];
+    let mut expected_buffer = [0u8; 64 * 1024];
+
+    loop {
+        let actual_count = actual.read(&mut actual_buffer).with_path(path)?;
+        let expected_count = expected
+            .read(&mut expected_buffer)
+            .with_path(expected_path)?;
+        if actual_count != expected_count
+            || actual_buffer[..actual_count] != expected_buffer[..expected_count]
+        {
+            return Ok(false);
+        }
+        if actual_count == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn blob_metadata_matches(
+    path: &Path,
+    expected_len: u64,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+) -> Result<bool> {
+    let metadata = fs::metadata(path).with_path(path)?;
+    Ok(metadata.len() == expected_len
+        && metadata.uid() == uid
+        && metadata.gid() == gid
+        && metadata.mode() & 0o7777 == mode & 0o7777)
 }
 
 /// get the filesystem path to a blob
