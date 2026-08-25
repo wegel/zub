@@ -62,6 +62,29 @@ pub fn commit_with_metadata(
     // phase 2: commit the root tree with parallel file processing
     let tree_hash = commit_tree_parallel(repo, source, "", &hardlink_targets)?;
 
+    commit_tree_with_metadata(repo, &tree_hash, ref_name, message, author, metadata)
+}
+
+/// Commit an existing tree to a ref without materializing it on disk.
+pub fn commit_tree(
+    repo: &Repo,
+    tree: &Hash,
+    ref_name: &str,
+    message: Option<&str>,
+    author: Option<&str>,
+) -> Result<Hash> {
+    commit_tree_with_metadata(repo, tree, ref_name, message, author, &[])
+}
+
+/// Commit an existing tree to a ref with custom metadata.
+pub fn commit_tree_with_metadata(
+    repo: &Repo,
+    tree: &Hash,
+    ref_name: &str,
+    message: Option<&str>,
+    author: Option<&str>,
+    metadata: &[(&str, &str)],
+) -> Result<Hash> {
     // get parent commit if ref exists
     let parents = match crate::refs::read_ref(repo, ref_name) {
         Ok(parent) => vec![parent],
@@ -71,7 +94,7 @@ pub fn commit_with_metadata(
 
     // create commit with metadata
     let mut commit = Commit::new(
-        tree_hash,
+        *tree,
         parents,
         author.unwrap_or("zub"),
         message.unwrap_or(""),
@@ -453,5 +476,32 @@ mod tests {
         let tree = crate::object::read_tree(&repo, &commit_obj.tree).unwrap();
 
         assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn test_commit_existing_tree_with_metadata() {
+        let (dir, repo) = test_repo();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), "content").unwrap();
+        let source_commit = commit(&repo, &source, "source", None, None).unwrap();
+        let tree = crate::object::read_commit(&repo, &source_commit)
+            .unwrap()
+            .tree;
+
+        let hash = commit_tree_with_metadata(
+            &repo,
+            &tree,
+            "selected",
+            Some("selected tree"),
+            Some("test"),
+            &[("key", "value")],
+        )
+        .unwrap();
+        let committed = crate::object::read_commit(&repo, &hash).unwrap();
+
+        assert_eq!(committed.tree, tree);
+        assert_eq!(committed.metadata["key"], "value");
+        assert_eq!(crate::refs::resolve_ref(&repo, "selected").unwrap(), hash);
     }
 }

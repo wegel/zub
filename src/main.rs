@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
 use zub::ops::{
-    checkout, commit, diff, fsck, gc, log, ls_tree, ls_tree_recursive, map, union_checkout,
-    union_trees, CheckoutOptions, ConflictResolution, LsTreeOptions, MapOptions,
+    checkout, checkout_paths, commit, diff, fsck, gc, log, ls_tree, ls_tree_recursive, map,
+    union_checkout, union_trees, CheckoutOptions, ConflictResolution, LsTreeOptions, MapOptions,
     UnionCheckoutOptions, UnionOptions,
 };
 use zub::transport::{pull_local, push_local, PullOptions, PushOptions};
@@ -102,6 +102,10 @@ enum Commands {
         /// preserve sparse file holes
         #[arg(long)]
         sparse: bool,
+
+        /// path inside the tree to checkout; may be repeated
+        #[arg(long = "path")]
+        paths: Vec<PathBuf>,
     },
 
     /// show commit log for a ref
@@ -385,6 +389,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             hardlink,
             copy,
             sparse,
+            paths,
         } => {
             let repo = Repo::open(&repo_path)?;
             let options = CheckoutOptions {
@@ -392,7 +397,11 @@ fn run(cli: Cli) -> zub::Result<()> {
                 hardlink: hardlink && !copy,
                 preserve_sparse: sparse,
             };
-            checkout(&repo, &ref_name, &destination, options)?;
+            if paths.is_empty() {
+                checkout(&repo, &ref_name, &destination, options)?;
+            } else {
+                checkout_paths(&repo, &ref_name, &paths, &destination, options)?;
+            }
             println!("checked out {} to {}", ref_name, destination.display());
         }
 

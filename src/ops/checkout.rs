@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::fs::{
@@ -33,6 +33,20 @@ pub fn checkout(repo: &Repo, ref_name: &str, target: &Path, opts: CheckoutOption
     let commit = read_commit(repo, &commit_hash)?;
 
     checkout_from_tree_hash(repo, &commit.tree, target, opts)
+}
+
+/// Checkout selected paths from a ref or commit hash at their original paths.
+pub fn checkout_paths(
+    repo: &Repo,
+    revision: &str,
+    paths: &[PathBuf],
+    target: &Path,
+    opts: CheckoutOptions,
+) -> Result<()> {
+    let commit_hash = resolve_ref(repo, revision)?;
+    let commit = read_commit(repo, &commit_hash)?;
+    let tree = super::select_tree_from_hash(repo, &commit.tree, paths)?;
+    checkout_from_tree_hash(repo, &tree, target, opts)
 }
 
 /// checkout directly from a tree hash (bypasses commit/ref resolution)
@@ -384,6 +398,32 @@ mod tests {
         // verify
         let content = fs::read_to_string(target.join("hello.txt")).unwrap();
         assert_eq!(content, "world");
+    }
+
+    #[test]
+    fn test_checkout_selected_paths() {
+        let (dir, repo) = test_repo();
+        let source = dir.path().join("source");
+        fs::create_dir_all(source.join("usr/bin")).unwrap();
+        fs::write(source.join("usr/bin/keep"), "keep").unwrap();
+        fs::write(source.join("usr/bin/omit"), "omit").unwrap();
+        commit(&repo, &source, "test/ref", None, None).unwrap();
+
+        let target = dir.path().join("target");
+        checkout_paths(
+            &repo,
+            "test/ref",
+            &[PathBuf::from("/usr/bin/keep")],
+            &target,
+            Default::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("usr/bin/keep")).unwrap(),
+            "keep"
+        );
+        assert!(!target.join("usr/bin/omit").exists());
     }
 
     #[test]

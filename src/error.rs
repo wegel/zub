@@ -20,6 +20,9 @@ pub enum Error {
     #[error("path not found in tree: {0}")]
     PathNotFound(String),
 
+    #[error("invalid tree path: {0}")]
+    InvalidPath(String),
+
     #[error("object not found: {0}")]
     ObjectNotFound(Hash),
 
