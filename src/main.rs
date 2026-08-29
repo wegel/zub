@@ -196,7 +196,11 @@ enum Commands {
     },
 
     /// verify repository integrity
-    Fsck,
+    Fsck {
+        /// rebuild derived indexes after a successful check
+        #[arg(long)]
+        reindex: bool,
+    },
 
     /// garbage collect unreachable objects
     Gc {
@@ -275,7 +279,11 @@ enum Commands {
     },
 
     /// list refs
-    Refs,
+    Refs {
+        /// list only refs whose current tree contains this blob
+        #[arg(long)]
+        blob: Option<String>,
+    },
 
     /// show ref hash
     ShowRef {
@@ -497,7 +505,7 @@ fn run(cli: Cli) -> zub::Result<()> {
             );
         }
 
-        Commands::Fsck => {
+        Commands::Fsck { reindex } => {
             let repo = Repo::open(&repo_path)?;
             let report = fsck(&repo)?;
 
@@ -526,6 +534,10 @@ fn run(cli: Cli) -> zub::Result<()> {
 
             if report.is_ok() {
                 println!("\nrepository is healthy");
+                if reindex {
+                    let markers = zub::rebuild_index(&repo)?;
+                    println!("rebuilt reverse index: {} blob/tree links", markers);
+                }
             } else {
                 println!("\nrepository has issues");
                 return Err(zub::Error::CorruptObjectMessage(
@@ -717,9 +729,12 @@ fn run(cli: Cli) -> zub::Result<()> {
             }
         }
 
-        Commands::Refs => {
+        Commands::Refs { blob } => {
             let repo = Repo::open(&repo_path)?;
-            let refs = zub::list_refs(&repo)?;
+            let refs = match blob {
+                Some(blob) => zub::refs_containing_blob(&repo, Hash::from_hex(&blob)?)?,
+                None => zub::list_refs(&repo)?,
+            };
 
             for ref_name in refs {
                 let hash = zub::read_ref(&repo, &ref_name)?;

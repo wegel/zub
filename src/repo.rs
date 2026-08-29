@@ -122,6 +122,11 @@ impl Repo {
         self.path.join("refs/artifacts")
     }
 
+    /// path to rebuildable indexes
+    pub fn index_path(&self) -> PathBuf {
+        self.path.join("index")
+    }
+
     /// path to tmp directory (for atomic writes)
     pub fn tmp_path(&self) -> PathBuf {
         self.path.join("tmp")

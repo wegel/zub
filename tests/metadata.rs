@@ -5,7 +5,11 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::Command;
 
-use zub::{parse_elf, Error, Hash};
+use zub::ops::commit;
+use zub::{
+    delete_artifact_ref, parse_elf, read_commit, read_named_artifact, read_tree, write_ref,
+    Artifact, Error, Hash, Repo,
+};
 
 #[test]
 fn elf_metadata_preserves_loader_paths_and_versioned_symbols() {
@@ -69,6 +73,43 @@ fn malformed_elf_magic_is_an_error() {
     assert!(matches!(error, Error::ElfMetadata { hash: actual, .. } if actual == hash));
 }
 
+#[test]
+fn publishing_a_ref_derives_and_repairs_elf_metadata() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = temporary.path();
+    fs::write(
+        root.join("library.c"),
+        b"int ep006_export(void) { return 6; }\n",
+    )
+    .expect("write library source");
+    fs::write(
+        root.join("versions.map"),
+        b"EP006_1 { global: ep006_export; local: *; };\n",
+    )
+    .expect("write version map");
+    compile_library(root);
+    let source = root.join("source");
+    fs::create_dir(&source).expect("create source");
+    fs::copy(root.join("libep006.so.1"), source.join("libep006.so.1"))
+        .expect("copy library into source");
+    let repo = Repo::init(&root.join("repo")).expect("initialize repository");
+
+    let commit = commit(&repo, &source, "library", None, None).expect("commit library");
+    let blob = root_blob(&repo, commit, "libep006.so.1");
+    let key = format!("elf/{blob}");
+    assert!(matches!(
+        read_named_artifact(&repo, &key).expect("read derived artifact"),
+        Artifact::Elf(artifact) if artifact.blob == blob
+    ));
+
+    delete_artifact_ref(&repo, &key).expect("delete derived ref");
+    write_ref(&repo, "library-copy", &commit).expect("publish existing commit");
+    assert!(matches!(
+        read_named_artifact(&repo, &key).expect("read repaired artifact"),
+        Artifact::Elf(artifact) if artifact.blob == blob
+    ));
+}
+
 fn compile_library(root: &Path) {
     run_cc(
         root,
@@ -118,4 +159,13 @@ fn parse(path: impl AsRef<Path>) -> zub::ElfArtifact {
     parse_elf(hash, &bytes)
         .expect("parse ELF")
         .expect("ELF artifact")
+}
+
+fn root_blob(repo: &Repo, commit: Hash, name: &str) -> Hash {
+    let tree = read_commit(repo, &commit).expect("read commit").tree;
+    let tree = read_tree(repo, &tree).expect("read root tree");
+    match &tree.get(name).expect("root entry").kind {
+        zub::EntryKind::Regular { hash, .. } => *hash,
+        kind => panic!("expected regular file, found {}", kind.type_name()),
+    }
 }
