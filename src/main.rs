@@ -1,5 +1,7 @@
 //! zubCLI - git-like object tree command line interface
 
+mod cli_output;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -291,6 +293,18 @@ enum Commands {
         ref_name: String,
     },
 
+    /// inspect one plan's current outputs and builder witnesses
+    Plan {
+        /// plan BLAKE3 hash
+        plan: String,
+    },
+
+    /// inspect one named derived artifact
+    Artifact {
+        /// artifact key, such as elf/<blob> or interface/<tree>
+        key: String,
+    },
+
     /// delete a ref
     DeleteRef {
         /// ref name
@@ -552,8 +566,12 @@ fn run(cli: Cli) -> zub::Result<()> {
 
             let action = if dry_run { "would remove" } else { "removed" };
             println!(
-                "{} {} blobs, {} trees, {} commits",
-                action, stats.blobs_removed, stats.trees_removed, stats.commits_removed
+                "{} {} blobs, {} trees, {} commits, {} artifacts",
+                action,
+                stats.blobs_removed,
+                stats.trees_removed,
+                stats.commits_removed,
+                stats.artifacts_removed
             );
             println!("freed {} bytes", stats.bytes_freed);
         }
@@ -746,6 +764,18 @@ fn run(cli: Cli) -> zub::Result<()> {
             let repo = Repo::open(&repo_path)?;
             let hash = zub::resolve_ref(&repo, &ref_name)?;
             println!("{}", hash);
+        }
+
+        Commands::Plan { plan } => {
+            let repo = Repo::open(&repo_path)?;
+            let report = zub::inspect_plan(&repo, Hash::from_hex(&plan)?)?;
+            cli_output::print_plan(&report);
+        }
+
+        Commands::Artifact { key } => {
+            let repo = Repo::open(&repo_path)?;
+            let artifact = zub::read_named_artifact(&repo, &key)?;
+            cli_output::print_artifact(&artifact);
         }
 
         Commands::DeleteRef { ref_name } => {

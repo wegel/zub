@@ -117,6 +117,12 @@ pub enum Error {
 
     #[error("cannot derive ELF metadata for blob {hash}: {message}")]
     ElfMetadata { hash: Hash, message: String },
+
+    #[error("plan not found: {0}")]
+    PlanNotFound(Hash),
+
+    #[error("invalid record for plan {plan}: {message}")]
+    PlanRecord { plan: Hash, message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

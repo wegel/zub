@@ -36,14 +36,15 @@ pub fn write_artifact(repo: &Repo, artifact: &Artifact) -> Result<Hash> {
     let artifact_dir = repo.artifacts_path().join(&dir);
     let artifact_path = artifact_dir.join(&file);
 
-    // dedup: if artifact already exists, we're done
-    if artifact_path.exists() {
-        return Ok(hash);
-    }
-
-    // serialize to cbor
     let mut cbor_bytes = Vec::new();
     ciborium::into_writer(artifact, &mut cbor_bytes)?;
+
+    if artifact_path.exists() {
+        let existing = fs::read(&artifact_path).with_path(&artifact_path)?;
+        if existing == cbor_bytes {
+            return Ok(hash);
+        }
+    }
 
     // ensure directory exists
     fs::create_dir_all(&artifact_dir).with_path(&artifact_dir)?;
@@ -81,14 +82,13 @@ pub fn read_artifact(repo: &Repo, hash: &Hash) -> Result<Artifact> {
         }
     })?;
 
-    // deserialize
-    let artifact: Artifact = ciborium::from_reader(&cbor_bytes[..])?;
-
-    // verify hash matches (ensures integrity)
-    let actual_hash = artifact.compute_hash();
+    let actual_hash = Hash::from_bytes(*blake3::hash(&cbor_bytes).as_bytes());
     if actual_hash != *hash {
         return Err(Error::CorruptObject(*hash));
     }
+
+    // deserialize
+    let artifact: Artifact = ciborium::from_reader(&cbor_bytes[..])?;
 
     Ok(artifact)
 }

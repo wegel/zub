@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,9 @@ pub struct Config {
     /// configured remotes
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remotes: Vec<Remote>,
+    /// directories whose `<tree>.<serial>` children protect deployed trees
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gc_roots: Vec<PathBuf>,
 }
 
 impl Config {
@@ -21,6 +24,7 @@ impl Config {
         Self {
             namespace,
             remotes: vec![],
+            gc_roots: vec![],
         }
     }
 
@@ -103,6 +107,7 @@ mod tests {
                 Remote::new("origin", "ssh://server/var/zub"),
                 Remote::new("backup", "/mnt/backup/zub"),
             ],
+            gc_roots: vec![PathBuf::from("/nex/deployments")],
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -111,6 +116,7 @@ mod tests {
         assert_eq!(config.namespace.uid_map, parsed.namespace.uid_map);
         assert_eq!(config.namespace.gid_map, parsed.namespace.gid_map);
         assert_eq!(config.remotes, parsed.remotes);
+        assert_eq!(config.gc_roots, parsed.gc_roots);
     }
 
     #[test]
@@ -130,6 +136,7 @@ mod tests {
         // remove
         config.remove_remote("origin").unwrap();
         assert!(config.remotes.is_empty());
+        assert!(config.gc_roots.is_empty());
 
         // remove non-existent should fail
         assert!(config.remove_remote("origin").is_err());

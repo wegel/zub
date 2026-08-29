@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 use crate::error::{IoResultExt, Result};
 use crate::hash::Hash;
 use crate::object::{read_commit, read_tree};
-use crate::refs::list_refs;
+use crate::refs::{list_artifact_refs, list_refs, read_artifact_ref};
 use crate::repo::Repo;
 use crate::types::EntryKind;
 
@@ -16,6 +16,7 @@ pub struct GcStats {
     pub blobs_removed: usize,
     pub trees_removed: usize,
     pub commits_removed: usize,
+    pub artifacts_removed: usize,
     pub bytes_freed: u64,
 }
 
@@ -25,6 +26,7 @@ pub fn gc(repo: &Repo, dry_run: bool) -> Result<GcStats> {
     let mut reachable_blobs = HashSet::new();
     let mut reachable_trees = HashSet::new();
     let mut reachable_commits = HashSet::new();
+    let mut reachable_artifacts = HashSet::new();
 
     // start from all refs
     for ref_name in list_refs(repo)? {
@@ -36,6 +38,14 @@ pub fn gc(repo: &Repo, dry_run: bool) -> Result<GcStats> {
             &mut reachable_trees,
             &mut reachable_commits,
         )?;
+    }
+
+    for root in &repo.config().gc_roots {
+        mark_deployments(repo, root, &mut reachable_blobs, &mut reachable_trees)?;
+    }
+
+    for reference in list_artifact_refs(repo)? {
+        reachable_artifacts.insert(read_artifact_ref(repo, &reference)?);
     }
 
     // sweep phase: remove unmarked objects
@@ -68,7 +78,45 @@ pub fn gc(repo: &Repo, dry_run: bool) -> Result<GcStats> {
         &mut stats.bytes_freed,
     )?;
 
+    sweep_objects(
+        &repo.artifacts_path(),
+        &reachable_artifacts,
+        dry_run,
+        &mut stats.artifacts_removed,
+        &mut stats.bytes_freed,
+    )?;
+
     Ok(stats)
+}
+
+fn mark_deployments(
+    repo: &Repo,
+    root: &std::path::Path,
+    reachable_blobs: &mut HashSet<Hash>,
+    reachable_trees: &mut HashSet<Hash>,
+) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root).with_path(root)? {
+        let entry = entry.with_path(root)?;
+        if !entry.file_type().with_path(entry.path())?.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some((tree, serial)) = name.split_once('.') else {
+            continue;
+        };
+        if serial.is_empty() || !serial.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(tree) = Hash::from_hex(tree) {
+            mark_tree(repo, &tree, reachable_blobs, reachable_trees)?;
+        }
+    }
+    Ok(())
 }
 
 /// recursively mark a commit and all its reachable objects
@@ -208,6 +256,7 @@ fn sweep_objects(
 mod tests {
     use super::*;
     use crate::ops::commit::commit;
+    use crate::{delete_artifact_ref, write_named_artifact, Artifact, InterfaceArtifact};
     use tempfile::tempdir;
 
     fn test_repo() -> (tempfile::TempDir, Repo) {
@@ -280,5 +329,44 @@ mod tests {
 
         // should have removed objects
         assert!(stats.blobs_removed > 0 || stats.trees_removed > 0 || stats.commits_removed > 0);
+    }
+
+    #[test]
+    fn configured_deployment_directory_keeps_its_tree() {
+        let (dir, mut repo) = test_repo();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file.txt"), "content").unwrap();
+        let commit = commit(&repo, &source, "test", None, None).unwrap();
+        let tree = read_commit(&repo, &commit).unwrap().tree;
+        crate::delete_ref(&repo, "test").unwrap();
+        let deployments = dir.path().join("deployments");
+        fs::create_dir_all(deployments.join(format!("{tree}.7"))).unwrap();
+        repo.config_mut().gc_roots.push(deployments);
+        repo.save_config().unwrap();
+
+        let stats = gc(&repo, false).unwrap();
+
+        assert_eq!(stats.trees_removed, 0);
+        assert_eq!(stats.blobs_removed, 0);
+        assert!(read_tree(&repo, &tree).is_ok());
+    }
+
+    #[test]
+    fn artifact_refs_control_artifact_collection() {
+        let (_dir, repo) = test_repo();
+        let artifact = Artifact::Interface(InterfaceArtifact {
+            schema: crate::ARTIFACT_SCHEMA,
+            output: Hash::from_bytes([1; 32]),
+            interface: Hash::from_bytes([2; 32]),
+            elf_blobs: Vec::new(),
+            headers: Vec::new(),
+        });
+        let hash = write_named_artifact(&repo, "interface/test", &artifact).unwrap();
+        assert_eq!(gc(&repo, false).unwrap().artifacts_removed, 0);
+
+        delete_artifact_ref(&repo, "interface/test").unwrap();
+        assert_eq!(gc(&repo, false).unwrap().artifacts_removed, 1);
+        assert!(!crate::artifact_exists(&repo, &hash));
     }
 }

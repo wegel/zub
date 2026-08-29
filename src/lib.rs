@@ -61,7 +61,10 @@ pub use object::{
     read_commit, read_named_artifact, read_tree, tree_path, verify_commit, write_artifact,
     write_blob, write_commit, write_named_artifact, write_tree,
 };
-pub use ops::{du, du_tree, stats, truncate_history, PathSize, RefSize, RepoStats, TruncateStats};
+pub use ops::{
+    builder_key, du, du_tree, inspect_plan, stats, truncate_history, witness_ref, PathSize,
+    PlanOutput, PlanReport, PlanWitness, RefSize, RepoStats, TruncateStats,
+};
 pub use refs::{
     artifact_ref_exists, delete_artifact_ref, delete_artifact_refs_matching, delete_ref,
     delete_refs_matching, list_artifact_refs, list_artifact_refs_matching, list_refs,

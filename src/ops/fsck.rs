@@ -5,8 +5,8 @@ use walkdir::WalkDir;
 
 use crate::error::Result;
 use crate::hash::Hash;
-use crate::object::{read_commit, read_tree};
-use crate::refs::list_refs;
+use crate::object::{read_artifact, read_commit, read_tree};
+use crate::refs::{list_artifact_refs, list_refs, read_artifact_ref};
 use crate::repo::Repo;
 use crate::types::EntryKind;
 
@@ -48,6 +48,7 @@ pub enum ObjectType {
     Blob,
     Tree,
     Commit,
+    Artifact,
 }
 
 impl std::fmt::Display for ObjectType {
@@ -56,6 +57,7 @@ impl std::fmt::Display for ObjectType {
             ObjectType::Blob => write!(f, "blob"),
             ObjectType::Tree => write!(f, "tree"),
             ObjectType::Commit => write!(f, "commit"),
+            ObjectType::Artifact => write!(f, "artifact"),
         }
     }
 }
@@ -66,6 +68,7 @@ pub fn fsck(repo: &Repo) -> Result<FsckReport> {
     let mut reachable_blobs = HashSet::new();
     let mut reachable_trees = HashSet::new();
     let mut reachable_commits = HashSet::new();
+    let mut reachable_artifacts = HashSet::new();
 
     // check all refs and their reachable objects
     for ref_name in list_refs(repo)? {
@@ -81,10 +84,17 @@ pub fn fsck(repo: &Repo) -> Result<FsckReport> {
         )?;
     }
 
+    for reference in list_artifact_refs(repo)? {
+        let hash = read_artifact_ref(repo, &reference)?;
+        reachable_artifacts.insert(hash);
+        check_artifact(&reference, hash, repo, &mut report);
+    }
+
     // find all objects on disk
     let all_blobs = list_objects(&repo.blobs_path())?;
     let all_trees = list_objects(&repo.trees_path())?;
     let all_commits = list_objects(&repo.commits_path())?;
+    let all_artifacts = list_objects(&repo.artifacts_path())?;
 
     // verify object hashes and find dangling objects
     for hash in &all_blobs {
@@ -138,7 +148,37 @@ pub fn fsck(repo: &Repo) -> Result<FsckReport> {
         }
     }
 
+    for hash in &all_artifacts {
+        report.objects_checked += 1;
+        if let Err(error) = read_artifact(repo, hash) {
+            report.corrupt_objects.push(CorruptObject {
+                hash: *hash,
+                object_type: ObjectType::Artifact,
+                message: error.to_string(),
+            });
+        }
+        if !reachable_artifacts.contains(hash) {
+            report.dangling_objects.push(*hash);
+        }
+    }
+
     Ok(report)
+}
+
+fn check_artifact(reference: &str, hash: Hash, repo: &Repo, report: &mut FsckReport) {
+    match read_artifact(repo, &hash) {
+        Ok(_) => {}
+        Err(crate::Error::ObjectNotFound(_)) => report.missing_objects.push(MissingObject {
+            hash,
+            object_type: ObjectType::Artifact,
+            referenced_by: format!("artifact ref {reference}"),
+        }),
+        Err(error) => report.corrupt_objects.push(CorruptObject {
+            hash,
+            object_type: ObjectType::Artifact,
+            message: error.to_string(),
+        }),
+    }
 }
 
 fn check_commit(
@@ -333,70 +373,5 @@ fn list_objects(dir: &std::path::Path) -> Result<Vec<Hash>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ops::commit::commit;
-    use tempfile::tempdir;
-
-    fn test_repo() -> (tempfile::TempDir, Repo) {
-        let dir = tempdir().unwrap();
-        let repo_path = dir.path().join("repo");
-        let repo = Repo::init(&repo_path).unwrap();
-        (dir, repo)
-    }
-
-    #[test]
-    fn test_fsck_healthy_repo() {
-        let (dir, repo) = test_repo();
-
-        let source = dir.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("file.txt"), "content").unwrap();
-        commit(&repo, &source, "test", None, None).unwrap();
-
-        let report = fsck(&repo).unwrap();
-
-        assert!(report.is_ok());
-        assert!(report.corrupt_objects.is_empty());
-        assert!(report.missing_objects.is_empty());
-        assert!(report.dangling_objects.is_empty());
-    }
-
-    #[test]
-    fn test_fsck_with_dangling() {
-        let (dir, repo) = test_repo();
-
-        let source = dir.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("file.txt"), "content").unwrap();
-        commit(&repo, &source, "test", None, None).unwrap();
-
-        // delete ref to create dangling objects
-        crate::refs::delete_ref(&repo, "test").unwrap();
-
-        let report = fsck(&repo).unwrap();
-
-        // should find dangling objects
-        assert!(!report.dangling_objects.is_empty());
-    }
-
-    #[test]
-    fn test_fsck_reports_reachable_blob_hash_mismatch() {
-        let (dir, repo) = test_repo();
-        let source = dir.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("file.txt"), "content").unwrap();
-        let commit_hash = commit(&repo, &source, "test", None, None).unwrap();
-        let commit = read_commit(&repo, &commit_hash).unwrap();
-        let tree = read_tree(&repo, &commit.tree).unwrap();
-        let blob = *tree.get("file.txt").unwrap().kind.hash().unwrap();
-        fs::write(crate::object::blob_path(&repo, &blob), "changed").unwrap();
-
-        let report = fsck(&repo).unwrap();
-        assert!(!report.is_ok());
-        assert!(report
-            .corrupt_objects
-            .iter()
-            .any(|object| object.hash == blob && matches!(object.object_type, ObjectType::Blob)));
-    }
-}
+#[path = "fsck_tests.rs"]
+mod tests;
