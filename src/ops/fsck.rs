@@ -89,9 +89,8 @@ pub fn fsck(repo: &Repo) -> Result<FsckReport> {
     // verify object hashes and find dangling objects
     for hash in &all_blobs {
         report.objects_checked += 1;
-        // blob hash includes metadata, can't verify without knowing uid/gid/mode/xattrs
-        // just check file exists and is readable
-
+        // Reachable blobs were verified with metadata from their tree entries.
+        // A dangling blob has no tree-held xattrs, so only its name is known.
         if !reachable_blobs.contains(hash) {
             report.dangling_objects.push(*hash);
         }
@@ -218,26 +217,24 @@ fn check_tree(
         Ok(tree) => {
             for entry in tree.entries() {
                 match &entry.kind {
-                    EntryKind::Regular { hash, .. } => {
-                        reachable_blobs.insert(*hash);
-                        if !crate::object::blob_exists(repo, hash) {
-                            report.missing_objects.push(MissingObject {
-                                hash: *hash,
-                                object_type: ObjectType::Blob,
-                                referenced_by: format!("tree {} entry {}", tree_hash, entry.name),
-                            });
-                        }
-                    }
-                    EntryKind::Symlink { hash, .. } => {
-                        reachable_blobs.insert(*hash);
-                        if !crate::object::blob_exists(repo, hash) {
-                            report.missing_objects.push(MissingObject {
-                                hash: *hash,
-                                object_type: ObjectType::Blob,
-                                referenced_by: format!("tree {} entry {}", tree_hash, entry.name),
-                            });
-                        }
-                    }
+                    EntryKind::Regular { hash, xattrs, .. } => check_blob(
+                        repo,
+                        hash,
+                        xattrs,
+                        false,
+                        format!("tree {tree_hash} entry {}", entry.name),
+                        reachable_blobs,
+                        report,
+                    )?,
+                    EntryKind::Symlink { hash, xattrs } => check_blob(
+                        repo,
+                        hash,
+                        xattrs,
+                        true,
+                        format!("tree {tree_hash} entry {}", entry.name),
+                        reachable_blobs,
+                        report,
+                    )?,
                     EntryKind::Directory { hash, .. } => {
                         check_tree(
                             repo,
@@ -272,6 +269,33 @@ fn check_tree(
     Ok(())
 }
 
+fn check_blob(
+    repo: &Repo,
+    hash: &Hash,
+    xattrs: &[crate::types::Xattr],
+    symlink: bool,
+    referenced_by: String,
+    reachable_blobs: &mut HashSet<Hash>,
+    report: &mut FsckReport,
+) -> Result<()> {
+    reachable_blobs.insert(*hash);
+    match crate::object::verify_blob(repo, hash, xattrs, symlink) {
+        Ok(()) => {}
+        Err(crate::Error::ObjectNotFound(_)) => report.missing_objects.push(MissingObject {
+            hash: *hash,
+            object_type: ObjectType::Blob,
+            referenced_by,
+        }),
+        Err(crate::Error::CorruptObject(_)) => report.corrupt_objects.push(CorruptObject {
+            hash: *hash,
+            object_type: ObjectType::Blob,
+            message: "hash mismatch".to_string(),
+        }),
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
 fn list_objects(dir: &std::path::Path) -> Result<Vec<Hash>> {
     let mut hashes = Vec::new();
 
@@ -284,7 +308,7 @@ fn list_objects(dir: &std::path::Path) -> Result<Vec<Hash>> {
             path: dir.to_path_buf(),
             source: e
                 .into_io_error()
-                .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")),
+                .unwrap_or_else(|| std::io::Error::other("walkdir error")),
         })?;
 
         if !entry.file_type().is_file() {
@@ -354,5 +378,25 @@ mod tests {
 
         // should find dangling objects
         assert!(!report.dangling_objects.is_empty());
+    }
+
+    #[test]
+    fn test_fsck_reports_reachable_blob_hash_mismatch() {
+        let (dir, repo) = test_repo();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file.txt"), "content").unwrap();
+        let commit_hash = commit(&repo, &source, "test", None, None).unwrap();
+        let commit = read_commit(&repo, &commit_hash).unwrap();
+        let tree = read_tree(&repo, &commit.tree).unwrap();
+        let blob = *tree.get("file.txt").unwrap().kind.hash().unwrap();
+        fs::write(crate::object::blob_path(&repo, &blob), "changed").unwrap();
+
+        let report = fsck(&repo).unwrap();
+        assert!(!report.is_ok());
+        assert!(report
+            .corrupt_objects
+            .iter()
+            .any(|object| object.hash == blob && matches!(object.object_type, ObjectType::Blob)));
     }
 }

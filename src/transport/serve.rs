@@ -3,14 +3,18 @@
 //! implements the protocol that responds to pull/push requests from remote clients
 
 use std::collections::HashSet;
-use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
 
 use crate::hash::Hash;
-use crate::object::{read_commit, read_tree};
+use crate::object::{read_commit, read_tree, verify_commit};
 use crate::refs::{list_refs, read_ref, write_ref};
 use crate::repo::Repo;
+use crate::repo::RepoLock;
+use crate::transport::local::{
+    install_transfer_object, read_transfer_object, remove_objects, ObjectKind, ObjectSet,
+    TransferObject,
+};
+use crate::transport::ssh::PROTOCOL_VERSION;
 use crate::types::EntryKind;
 use crate::Result;
 
@@ -18,11 +22,15 @@ use crate::Result;
 /// used by SSH transport when `zub zub-remote` or similar is invoked.
 pub fn serve_remote(repo: &Repo) -> Result<()> {
     let stdin = std::io::stdin();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut stdout = std::io::stdout();
+    let reader = BufReader::new(stdin.lock());
+    let stdout = std::io::stdout();
+    serve_remote_io(repo, reader, stdout)
+}
 
+fn serve_remote_io(repo: &Repo, mut reader: impl BufRead, mut stdout: impl Write) -> Result<()> {
     // track the last requested ref for have-objects
     let mut last_ref_hash: Option<Hash> = None;
+    let mut received = ReceiveSession::default();
 
     loop {
         let mut line = String::new();
@@ -40,6 +48,11 @@ pub fn serve_remote(repo: &Repo) -> Result<()> {
         let args = parts.get(1).copied().unwrap_or("");
 
         match cmd {
+            "protocol-version" => {
+                writeln!(stdout, "{PROTOCOL_VERSION}").map_err(io_err)?;
+                write_end(&mut stdout)?;
+            }
+
             "list-refs" => {
                 handle_list_refs(repo, &mut stdout)?;
             }
@@ -57,14 +70,38 @@ pub fn serve_remote(repo: &Repo) -> Result<()> {
             }
 
             "object" => {
-                handle_receive_object(repo, args, &mut reader, &mut stdout)?;
+                received.lock(repo)?;
+                match receive_object(args, &mut reader).and_then(|object| {
+                    install_transfer_object(repo, &object).map(|new| (object, new))
+                }) {
+                    Ok((object, true)) => {
+                        received.objects.push(object.kind, object.hash);
+                        write_ok(&mut stdout)?;
+                    }
+                    Ok((_, false)) => write_ok(&mut stdout)?,
+                    Err(error) => {
+                        received.rollback(repo)?;
+                        write_error(&mut stdout, &error.to_string())?;
+                    }
+                }
             }
 
             "update-ref" => {
-                handle_update_ref(repo, args, &mut stdout)?;
+                received.lock(repo)?;
+                match update_ref(repo, args) {
+                    Ok(()) => {
+                        received.commit();
+                        write_ok(&mut stdout)?;
+                    }
+                    Err(error) => {
+                        received.rollback(repo)?;
+                        write_error(&mut stdout, &error.to_string())?;
+                    }
+                }
             }
 
             "quit" => {
+                received.rollback(repo)?;
                 break;
             }
 
@@ -74,7 +111,34 @@ pub fn serve_remote(repo: &Repo) -> Result<()> {
         }
     }
 
+    received.rollback(repo)?;
     Ok(())
+}
+
+#[derive(Default)]
+struct ReceiveSession {
+    objects: ObjectSet,
+    lock: Option<RepoLock>,
+}
+
+impl ReceiveSession {
+    fn lock(&mut self, repo: &Repo) -> Result<()> {
+        if self.lock.is_none() {
+            self.lock = Some(repo.lock()?);
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self) {
+        self.objects = ObjectSet::new();
+        self.lock = None;
+    }
+
+    fn rollback(&mut self, repo: &Repo) -> Result<()> {
+        remove_objects(repo, &self.objects)?;
+        self.commit();
+        Ok(())
+    }
 }
 
 fn handle_list_refs(repo: &Repo, stdout: &mut impl Write) -> Result<()> {
@@ -128,6 +192,7 @@ fn handle_have_objects(
     let mut to_send: Vec<(String, Hash)> = Vec::new();
 
     if let Some(commit_hash) = last_ref_hash {
+        verify_commit(repo, commit_hash)?;
         // walk the commit tree to find all needed objects
         let mut needed = Vec::new();
         let mut visited = HashSet::new();
@@ -149,9 +214,26 @@ fn handle_have_objects(
 
     // now send the actual objects
     for (obj_type, hash) in &to_send {
-        let (data, mode) = read_object_data_with_mode(repo, obj_type, hash)?;
-        writeln!(stdout, "object {} {} {} {}", obj_type, hash, data.len(), mode).map_err(io_err)?;
-        stdout.write_all(&data).map_err(io_err)?;
+        let object = read_transfer_object(repo, ObjectKind::parse(obj_type)?, hash)?;
+        let metadata = object
+            .metadata
+            .unwrap_or(crate::transport::local::BlobMetadata {
+                uid: 0,
+                gid: 0,
+                mode: 0,
+            });
+        writeln!(
+            stdout,
+            "object {} {} {} {} {} {}",
+            object.kind,
+            object.hash,
+            object.data.len(),
+            metadata.uid,
+            metadata.gid,
+            metadata.mode
+        )
+        .map_err(io_err)?;
+        stdout.write_all(&object.data).map_err(io_err)?;
     }
     write_end(stdout)?;
 
@@ -189,20 +271,20 @@ fn handle_want_objects(
     write_end(stdout)
 }
 
-fn handle_receive_object(
-    repo: &Repo,
-    args: &str,
-    reader: &mut impl BufRead,
-    stdout: &mut impl Write,
-) -> Result<()> {
-    let obj_parts: Vec<&str> = args.splitn(3, ' ').collect();
-    if obj_parts.len() != 3 {
-        return write_error(stdout, "invalid object args");
+fn receive_object(args: &str, reader: &mut impl BufRead) -> Result<TransferObject> {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    if parts.len() != 6 {
+        return Err(crate::Error::Transport {
+            message: "invalid object header".to_string(),
+        });
     }
 
-    let obj_type = obj_parts[0];
-    let hash = Hash::from_hex(obj_parts[1])?;
-    let size: usize = obj_parts[2].parse().unwrap_or(0);
+    let kind = ObjectKind::parse(parts[0])?;
+    let hash = Hash::from_hex(parts[1])?;
+    let size = parse_number(parts[2], "size")? as usize;
+    let uid = parse_number(parts[3], "uid")? as u32;
+    let gid = parse_number(parts[4], "gid")? as u32;
+    let mode = parse_number(parts[5], "mode")? as u32;
 
     let mut data = vec![0u8; size];
     reader.read_exact(&mut data).map_err(|e| crate::Error::Io {
@@ -210,39 +292,30 @@ fn handle_receive_object(
         source: e,
     })?;
 
-    let dest = object_path(repo, obj_type, &hash);
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| crate::Error::Io {
-            path: parent.to_path_buf(),
-            source: e,
-        })?;
-    }
-    fs::write(&dest, &data).map_err(|e| crate::Error::Io {
-        path: dest,
-        source: e,
-    })?;
-
-    writeln!(stdout, "ok").map_err(io_err)?;
-    write_end(stdout)
+    Ok(TransferObject {
+        kind,
+        hash,
+        data,
+        metadata: (kind == ObjectKind::Blob).then_some(crate::transport::local::BlobMetadata {
+            uid,
+            gid,
+            mode,
+        }),
+    })
 }
 
-fn handle_update_ref(repo: &Repo, args: &str, stdout: &mut impl Write) -> Result<()> {
+fn update_ref(repo: &Repo, args: &str) -> Result<()> {
     let ref_parts: Vec<&str> = args.splitn(2, ' ').collect();
     if ref_parts.len() != 2 {
-        return write_error(stdout, "invalid update-ref args");
+        return Err(crate::Error::Transport {
+            message: "invalid update-ref arguments".to_string(),
+        });
     }
 
     let ref_name = ref_parts[0];
-    match Hash::from_hex(ref_parts[1]) {
-        Ok(hash) => {
-            write_ref(repo, ref_name, &hash)?;
-            writeln!(stdout, "ok").map_err(io_err)?;
-        }
-        Err(_) => {
-            writeln!(stdout, "error: invalid hash").map_err(io_err)?;
-        }
-    }
-    write_end(stdout)
+    let hash = Hash::from_hex(ref_parts[1])?;
+    verify_commit(repo, &hash)?;
+    write_ref(repo, ref_name, &hash)
 }
 
 // helper: collect all objects reachable from a commit
@@ -297,35 +370,20 @@ fn collect_tree_objects(
 }
 
 fn object_exists(repo: &Repo, obj_type: &str, hash: &Hash) -> bool {
-    object_path(repo, obj_type, hash).exists()
+    ObjectKind::parse(obj_type)
+        .map(|kind| crate::transport::local::object_path(repo, kind, hash).exists())
+        .unwrap_or(false)
 }
 
-fn object_path(repo: &Repo, obj_type: &str, hash: &Hash) -> PathBuf {
-    let hex = hash.to_hex();
-    let base = match obj_type {
-        "blob" => repo.blobs_path(),
-        "tree" => repo.trees_path(),
-        "commit" => repo.commits_path(),
-        _ => return PathBuf::new(),
-    };
-    base.join(&hex[..2]).join(&hex[2..])
+fn parse_number(value: &str, field: &str) -> Result<u64> {
+    value.parse().map_err(|_| crate::Error::Transport {
+        message: format!("invalid object {field}: {value}"),
+    })
 }
 
-fn read_object_data_with_mode(repo: &Repo, obj_type: &str, hash: &Hash) -> Result<(Vec<u8>, u32)> {
-    use std::os::unix::fs::MetadataExt;
-    let path = object_path(repo, obj_type, hash);
-    let data = fs::read(&path).map_err(|e| crate::Error::Io {
-        path: path.clone(),
-        source: e,
-    })?;
-    let mode = if obj_type == "blob" {
-        fs::metadata(&path)
-            .map(|m| m.mode() & 0o7777)
-            .unwrap_or(0o644)
-    } else {
-        0
-    };
-    Ok((data, mode))
+fn write_ok(stdout: &mut impl Write) -> Result<()> {
+    writeln!(stdout, "ok").map_err(io_err)?;
+    write_end(stdout)
 }
 
 fn write_end(stdout: &mut impl Write) -> Result<()> {
@@ -343,5 +401,154 @@ fn io_err(e: std::io::Error) -> crate::Error {
     crate::Error::Io {
         path: "stdout".into(),
         source: e,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io::{Cursor, Write};
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+    use crate::ops::commit;
+    use crate::transport::local::list_all_objects;
+    use crate::{MapEntry, NsConfig};
+
+    #[test]
+    fn ssh_protocol_round_trip_preserves_blob_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut source = Repo::init(&temporary.path().join("source-repo")).unwrap();
+        let mut destination = Repo::init(&temporary.path().join("destination-repo")).unwrap();
+        configure_test_namespace(&mut source);
+        configure_test_namespace(&mut destination);
+        let source_path = temporary.path().join("source");
+        fs::create_dir(&source_path).unwrap();
+        let probe = source_path.join("probe");
+        fs::write(&probe, b"payload").unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o751)).unwrap();
+        xattr::set(&probe, "user.zub-test", b"metadata").unwrap();
+        let commit_hash = commit(&source, &source_path, "test", Some("fixture"), None).unwrap();
+
+        let objects = transfer_objects(&source, &commit_hash);
+        let input = push_input(&objects, "test", commit_hash);
+        let mut output = Vec::new();
+        serve_remote_io(&destination, Cursor::new(input), &mut output).unwrap();
+
+        assert_eq!(read_ref(&destination, "test").unwrap(), commit_hash);
+        verify_commit(&destination, &commit_hash).unwrap();
+        assert!(String::from_utf8_lossy(&output).contains(&format!("{PROTOCOL_VERSION}\nend")));
+    }
+
+    #[test]
+    fn ssh_protocol_rejects_corrupt_blob_and_rolls_back_objects() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = Repo::init(&temporary.path().join("source-repo")).unwrap();
+        let destination = Repo::init(&temporary.path().join("destination-repo")).unwrap();
+        let source_path = temporary.path().join("source");
+        fs::create_dir(&source_path).unwrap();
+        fs::write(source_path.join("probe"), b"payload").unwrap();
+        let commit_hash = commit(&source, &source_path, "test", Some("fixture"), None).unwrap();
+        let mut objects = transfer_objects(&source, &commit_hash);
+        let blob = objects
+            .iter_mut()
+            .find(|object| object.kind == ObjectKind::Blob)
+            .unwrap();
+        blob.data = b"corrupt".to_vec();
+
+        let input = push_input(&objects, "test", commit_hash);
+        let mut output = Vec::new();
+        serve_remote_io(&destination, Cursor::new(input), &mut output).unwrap();
+
+        assert!(matches!(
+            read_ref(&destination, "test"),
+            Err(crate::Error::RefNotFound(_))
+        ));
+        assert!(list_all_objects(&destination).unwrap().is_empty());
+        assert!(String::from_utf8_lossy(&output).contains("corrupt object"));
+    }
+
+    #[test]
+    fn ssh_pull_frames_include_logical_blob_metadata() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut source = Repo::init(&temporary.path().join("source-repo")).unwrap();
+        configure_test_namespace(&mut source);
+        let source_path = temporary.path().join("source");
+        fs::create_dir(&source_path).unwrap();
+        let probe = source_path.join("probe");
+        fs::write(&probe, b"payload").unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o751)).unwrap();
+        let commit_hash = commit(&source, &source_path, "test", Some("fixture"), None).unwrap();
+        let blob = transfer_objects(&source, &commit_hash)
+            .into_iter()
+            .find(|object| object.kind == ObjectKind::Blob)
+            .unwrap();
+        let metadata = blob.metadata.unwrap();
+        let expected = format!(
+            "object blob {} {} {} {} {}\n",
+            blob.hash,
+            blob.data.len(),
+            metadata.uid,
+            metadata.gid,
+            metadata.mode
+        );
+        let input = "protocol-version\nget-ref test\nhave-objects\nend\nquit\n".to_string();
+        let mut output = Vec::new();
+        serve_remote_io(&source, Cursor::new(input.into_bytes()), &mut output).unwrap();
+
+        assert!(contains(&output, expected.as_bytes()));
+        assert_eq!((metadata.uid, metadata.gid), (37, 43));
+    }
+
+    fn configure_test_namespace(repo: &mut Repo) {
+        repo.config_mut().namespace = NsConfig {
+            uid_map: vec![MapEntry::new(37, nix::unistd::getuid().as_raw(), 1)],
+            gid_map: vec![MapEntry::new(43, nix::unistd::getgid().as_raw(), 1)],
+        };
+        repo.save_config().unwrap();
+    }
+
+    fn transfer_objects(repo: &Repo, commit_hash: &Hash) -> Vec<TransferObject> {
+        let mut references = Vec::new();
+        collect_commit_objects(repo, commit_hash, &mut references, &mut HashSet::new()).unwrap();
+        references
+            .into_iter()
+            .map(|(kind, hash)| {
+                read_transfer_object(repo, ObjectKind::parse(&kind).unwrap(), &hash).unwrap()
+            })
+            .collect()
+    }
+
+    fn push_input(objects: &[TransferObject], ref_name: &str, commit_hash: Hash) -> Vec<u8> {
+        let mut input = b"protocol-version\n".to_vec();
+        for object in objects {
+            let metadata = object
+                .metadata
+                .unwrap_or(crate::transport::local::BlobMetadata {
+                    uid: 0,
+                    gid: 0,
+                    mode: 0,
+                });
+            writeln!(
+                input,
+                "object {} {} {} {} {} {}",
+                object.kind,
+                object.hash,
+                object.data.len(),
+                metadata.uid,
+                metadata.gid,
+                metadata.mode
+            )
+            .unwrap();
+            input.extend_from_slice(&object.data);
+        }
+        write!(input, "update-ref {ref_name} {commit_hash}\nquit\n").unwrap();
+        input
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 }

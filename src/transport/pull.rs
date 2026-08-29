@@ -1,16 +1,17 @@
 //! pull operation - fetch objects from remote
 
 use std::collections::HashSet;
-use std::fs::{self, Permissions};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::error::{IoResultExt, Result};
+use crate::error::Result;
 use crate::hash::Hash;
-use crate::object::{read_commit, read_tree};
+use crate::object::{read_commit, read_tree, verify_commit};
 use crate::refs::{read_ref, write_ref};
 use crate::repo::Repo;
-use crate::transport::local::{copy_objects, list_all_objects, ObjectSet, TransferStats};
+use crate::transport::local::{
+    copy_objects, install_transfer_object, list_all_objects, remove_objects, ObjectSet,
+    TransferStats,
+};
 use crate::transport::ssh::SshConnection;
 use crate::types::EntryKind;
 
@@ -31,12 +32,14 @@ pub fn pull_local(
     options: &PullOptions,
 ) -> Result<PullResult> {
     let src_hash = read_ref(src, ref_name)?;
+    verify_commit(src, &src_hash)?;
 
     // collect all objects reachable from the commit
     let mut needed = ObjectSet::new();
     collect_commit_objects(src, &src_hash, &mut needed, &mut HashSet::new())?;
 
     // filter out objects we already have
+    let _lock = (!options.dry_run).then(|| dst.lock()).transpose()?;
     let existing = list_all_objects(dst)?;
     let existing_blobs: HashSet<_> = existing.blobs.into_iter().collect();
     let existing_trees: HashSet<_> = existing.trees.into_iter().collect();
@@ -55,8 +58,15 @@ pub fn pull_local(
         });
     }
 
-    // copy needed objects
-    let stats = copy_objects(src, dst, &needed)?;
+    let result = copy_objects(src, dst, &needed)
+        .and_then(|stats| verify_commit(dst, &src_hash).map(|()| stats));
+    let stats = match result {
+        Ok(stats) => stats,
+        Err(error) => {
+            remove_objects(dst, &needed)?;
+            return Err(error);
+        }
+    };
 
     // update ref
     if !options.fetch_only {
@@ -86,6 +96,7 @@ pub fn pull_ssh(
         .ok_or_else(|| crate::Error::RefNotFound(ref_name.to_string()))?;
 
     // collect what we have
+    let _lock = (!options.dry_run).then(|| local.lock()).transpose()?;
     let existing = list_all_objects(local)?;
 
     // ask remote what we need
@@ -101,31 +112,25 @@ pub fn pull_ssh(
         });
     }
 
-    // receive objects
     let mut stats = TransferStats::default();
+    let mut introduced = ObjectSet::new();
 
-    while let Some((obj_type, hash, data, mode)) = conn.receive_object()? {
-        let path = match obj_type.as_str() {
-            "blob" => object_path(&local.blobs_path(), &hash),
-            "tree" => object_path(&local.trees_path(), &hash),
-            "commit" => object_path(&local.commits_path(), &hash),
-            _ => continue,
-        };
-
-        if !path.exists() {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).with_path(parent)?;
+    let receive_result = (|| -> Result<()> {
+        while let Some(object) = conn.receive_object()? {
+            if install_transfer_object(local, &object)? {
+                stats.bytes_transferred += object.data.len() as u64;
+                stats.copied += 1;
+                introduced.push(object.kind, object.hash);
+            } else {
+                stats.skipped += 1;
             }
-            stats.bytes_transferred += data.len() as u64;
-            fs::write(&path, &data).with_path(&path)?;
-            // restore file permissions for blobs
-            if obj_type == "blob" && mode != 0 {
-                fs::set_permissions(&path, Permissions::from_mode(mode)).with_path(&path)?;
-            }
-            stats.copied += 1;
-        } else {
-            stats.skipped += 1;
         }
+        verify_commit(local, &remote_hash)
+    })();
+    if let Err(error) = receive_result {
+        remove_objects(local, &introduced)?;
+        let _ = conn.close();
+        return Err(error);
     }
 
     // update ref
@@ -160,11 +165,6 @@ fn collect_commit_objects(
 
     // collect tree objects
     collect_tree_objects(repo, &commit.tree, objects, visited)?;
-
-    // recurse into parents
-    for parent in &commit.parents {
-        collect_commit_objects(repo, parent, objects, visited)?;
-    }
 
     Ok(())
 }
@@ -209,11 +209,6 @@ fn collect_tree_objects(
     Ok(())
 }
 
-fn object_path(base: &Path, hash: &Hash) -> std::path::PathBuf {
-    let hex = hash.to_hex();
-    base.join(&hex[..2]).join(&hex[2..])
-}
-
 /// result of a pull operation
 #[derive(Debug)]
 pub struct PullResult {
@@ -225,8 +220,12 @@ pub struct PullResult {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
     use super::*;
-    use crate::ops::commit;
+    use crate::ops::{checkout, commit, CheckoutOptions};
+    use crate::{MapEntry, NsConfig};
     use tempfile::tempdir;
 
     #[test]
@@ -309,5 +308,80 @@ mod tests {
         assert_eq!(result.hash, hash2);
         // some objects should have been skipped (already exist)
         // note: exact counts depend on object sharing
+    }
+
+    #[test]
+    fn transfer_preserves_blob_identity() {
+        let dir = tempdir().unwrap();
+        let mut src = Repo::init(&dir.path().join("src_repo")).unwrap();
+        let mut dst = Repo::init(&dir.path().join("dst_repo")).unwrap();
+        let uid = nix::unistd::getuid().as_raw();
+        let gid = nix::unistd::getgid().as_raw();
+        let namespace = NsConfig {
+            uid_map: vec![MapEntry::new(37, uid, 1)],
+            gid_map: vec![MapEntry::new(43, gid, 1)],
+        };
+        src.config_mut().namespace = namespace.clone();
+        src.save_config().unwrap();
+        dst.config_mut().namespace = namespace;
+        dst.save_config().unwrap();
+
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let probe = source.join("probe");
+        fs::write(&probe, "payload").unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o751)).unwrap();
+        xattr::set(&probe, "user.zub-test", b"metadata").unwrap();
+        let commit_hash = commit(&src, &source, "test", Some("fixture"), None).unwrap();
+
+        let result = pull_local(&src, &dst, "test", &PullOptions::default()).unwrap();
+        assert_eq!(result.hash, commit_hash);
+        assert_eq!(result.stats.hardlinked, 0);
+        verify_commit(&dst, &commit_hash).unwrap();
+
+        let tree = read_tree(&dst, &read_commit(&dst, &commit_hash).unwrap().tree).unwrap();
+        let blob = *tree.get("probe").unwrap().kind.hash().unwrap();
+        let source_blob = crate::object::blob_path(&src, &blob);
+        let destination_blob = crate::object::blob_path(&dst, &blob);
+        assert_ne!(
+            fs::metadata(source_blob).unwrap().ino(),
+            fs::metadata(&destination_blob).unwrap().ino()
+        );
+        let metadata = fs::metadata(destination_blob).unwrap();
+        assert_eq!(metadata.uid(), uid);
+        assert_eq!(metadata.gid(), gid);
+        assert_eq!(metadata.mode() & 0o7777, 0o751);
+
+        let checkout_path = dir.path().join("checkout");
+        checkout(&dst, "test", &checkout_path, CheckoutOptions::default()).unwrap();
+        assert_eq!(fs::read(checkout_path.join("probe")).unwrap(), b"payload");
+        assert_eq!(
+            xattr::get(checkout_path.join("probe"), "user.zub-test").unwrap(),
+            Some(b"metadata".to_vec())
+        );
+    }
+
+    #[test]
+    fn transfer_rejects_corrupt_blob_without_publishing_a_ref() {
+        let dir = tempdir().unwrap();
+        let src = Repo::init(&dir.path().join("src_repo")).unwrap();
+        let dst = Repo::init(&dir.path().join("dst_repo")).unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("probe"), "payload").unwrap();
+        let commit_hash = commit(&src, &source, "test", Some("fixture"), None).unwrap();
+        let tree = read_tree(&src, &read_commit(&src, &commit_hash).unwrap().tree).unwrap();
+        let blob = *tree.get("probe").unwrap().kind.hash().unwrap();
+        fs::write(crate::object::blob_path(&src, &blob), b"corrupt").unwrap();
+
+        assert!(matches!(
+            pull_local(&src, &dst, "test", &PullOptions::default()),
+            Err(crate::Error::CorruptObject(hash)) if hash == blob
+        ));
+        assert!(matches!(
+            read_ref(&dst, "test"),
+            Err(crate::Error::RefNotFound(_))
+        ));
+        assert!(list_all_objects(&dst).unwrap().is_empty());
     }
 }

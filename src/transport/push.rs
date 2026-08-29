@@ -1,15 +1,17 @@
 //! push operation - send objects to remote
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 
-use crate::error::{IoResultExt, Result};
+use crate::error::Result;
 use crate::hash::Hash;
-use crate::object::{read_commit, read_tree};
+use crate::object::{read_commit, read_tree, verify_commit};
 use crate::refs::{read_ref, write_ref};
 use crate::repo::Repo;
-use crate::transport::local::{copy_objects, list_all_objects, ObjectSet, TransferStats};
+use crate::transport::local::{
+    copy_objects, list_all_objects, read_transfer_object, remove_objects, ObjectKind, ObjectSet,
+    TransferStats,
+};
 use crate::transport::ssh::SshConnection;
 use crate::types::EntryKind;
 
@@ -30,6 +32,8 @@ pub fn push_local(
     options: &PushOptions,
 ) -> Result<PushResult> {
     let src_hash = read_ref(src, ref_name)?;
+    verify_commit(src, &src_hash)?;
+    let _lock = (!options.dry_run).then(|| dst.lock()).transpose()?;
 
     // check if this is a fast-forward (if ref exists in destination)
     if !options.force {
@@ -71,8 +75,15 @@ pub fn push_local(
         });
     }
 
-    // copy objects
-    let stats = copy_objects(src, dst, &needed)?;
+    let result = copy_objects(src, dst, &needed)
+        .and_then(|stats| verify_commit(dst, &src_hash).map(|()| stats));
+    let stats = match result {
+        Ok(stats) => stats,
+        Err(error) => {
+            remove_objects(dst, &needed)?;
+            return Err(error);
+        }
+    };
 
     // update ref
     write_ref(dst, ref_name, &src_hash)?;
@@ -93,6 +104,7 @@ pub fn push_ssh(
     options: &PushOptions,
 ) -> Result<PushResult> {
     let local_hash = read_ref(local, ref_name)?;
+    verify_commit(local, &local_hash)?;
 
     let mut conn = SshConnection::connect(remote, remote_path)?;
 
@@ -129,26 +141,23 @@ pub fn push_ssh(
     let mut stats = TransferStats::default();
 
     for hash in &needed.blobs {
-        let path = object_path(&local.blobs_path(), hash);
-        let data = fs::read(&path).with_path(&path)?;
-        conn.send_object("blob", hash, &data)?;
-        stats.bytes_transferred += data.len() as u64;
+        let object = read_transfer_object(local, ObjectKind::Blob, hash)?;
+        conn.send_object(&object)?;
+        stats.bytes_transferred += object.data.len() as u64;
         stats.copied += 1;
     }
 
     for hash in &needed.trees {
-        let path = object_path(&local.trees_path(), hash);
-        let data = fs::read(&path).with_path(&path)?;
-        conn.send_object("tree", hash, &data)?;
-        stats.bytes_transferred += data.len() as u64;
+        let object = read_transfer_object(local, ObjectKind::Tree, hash)?;
+        conn.send_object(&object)?;
+        stats.bytes_transferred += object.data.len() as u64;
         stats.copied += 1;
     }
 
     for hash in &needed.commits {
-        let path = object_path(&local.commits_path(), hash);
-        let data = fs::read(&path).with_path(&path)?;
-        conn.send_object("commit", hash, &data)?;
-        stats.bytes_transferred += data.len() as u64;
+        let object = read_transfer_object(local, ObjectKind::Commit, hash)?;
+        conn.send_object(&object)?;
+        stats.bytes_transferred += object.data.len() as u64;
         stats.copied += 1;
     }
 
@@ -212,11 +221,6 @@ fn collect_commit_objects(
     // collect tree objects
     collect_tree_objects(repo, &commit.tree, objects, visited)?;
 
-    // recurse into parents
-    for parent in &commit.parents {
-        collect_commit_objects(repo, parent, objects, visited)?;
-    }
-
     Ok(())
 }
 
@@ -260,11 +264,6 @@ fn collect_tree_objects(
     Ok(())
 }
 
-fn object_path(base: &Path, hash: &Hash) -> std::path::PathBuf {
-    let hex = hash.to_hex();
-    base.join(&hex[..2]).join(&hex[2..])
-}
-
 /// result of a push operation
 #[derive(Debug)]
 pub struct PushResult {
@@ -276,6 +275,8 @@ pub struct PushResult {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::ops::commit;
     use tempfile::tempdir;

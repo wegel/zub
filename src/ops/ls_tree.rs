@@ -255,17 +255,13 @@ fn resolve_metadata(repo: &Repo, kind: &EntryKind) -> Option<EntryMetadata> {
             mode: 0o40000 | (*mode & 0o7777),
             size: 0,
         }),
-        EntryKind::BlockDevice {
-            uid, gid, mode, ..
-        } => Some(EntryMetadata {
+        EntryKind::BlockDevice { uid, gid, mode, .. } => Some(EntryMetadata {
             uid: *uid,
             gid: *gid,
             mode: 0o60000 | (*mode & 0o7777),
             size: 0,
         }),
-        EntryKind::CharDevice {
-            uid, gid, mode, ..
-        } => Some(EntryMetadata {
+        EntryKind::CharDevice { uid, gid, mode, .. } => Some(EntryMetadata {
             uid: *uid,
             gid: *gid,
             mode: 0o20000 | (*mode & 0o7777),
@@ -352,10 +348,7 @@ impl LsTreeEntry {
                 perms, uid, gid, size_str, self.path, target_path
             )
         } else {
-            format!(
-                "{} {:>5} {:>5} {} {}",
-                perms, uid, gid, size_str, self.path
-            )
+            format!("{} {:>5} {:>5} {} {}", perms, uid, gid, size_str, self.path)
         }
     }
 }
@@ -462,8 +455,13 @@ mod tests {
         fs::write(source.join("subdir/b.txt"), "b").unwrap();
         commit(&repo, &source, "test", None, None).unwrap();
 
-        let entries =
-            ls_tree(&repo, "test", Some(Path::new("subdir")), &LsTreeOptions::default()).unwrap();
+        let entries = ls_tree(
+            &repo,
+            "test",
+            Some(Path::new("subdir")),
+            &LsTreeOptions::default(),
+        )
+        .unwrap();
 
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().any(|e| e.path == "subdir/a.txt"));

@@ -1,83 +1,238 @@
 //! local file transport for repository operations
 
-use std::fs::{self, Permissions};
-use std::os::unix::fs::PermissionsExt;
+use std::fmt;
+use std::fs::{self, File, Permissions};
+use std::io::Write;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use walkdir::WalkDir;
 
-use crate::error::{IoResultExt, Result};
+use crate::error::{Error, IoResultExt, Result};
 use crate::hash::Hash;
+use crate::namespace::{inside_to_outside, outside_to_inside};
 use crate::repo::Repo;
 
 /// copy objects from source repo to destination repo
 pub fn copy_objects(src: &Repo, dst: &Repo, hashes: &ObjectSet) -> Result<TransferStats> {
     let mut stats = TransferStats::default();
 
-    // copy blobs
     for hash in &hashes.blobs {
-        copy_object(&src.blobs_path(), &dst.blobs_path(), hash, &mut stats)?;
+        copy_object(src, dst, ObjectKind::Blob, hash, &mut stats)?;
     }
-
-    // copy trees
     for hash in &hashes.trees {
-        copy_object(&src.trees_path(), &dst.trees_path(), hash, &mut stats)?;
+        copy_object(src, dst, ObjectKind::Tree, hash, &mut stats)?;
     }
-
-    // copy commits
     for hash in &hashes.commits {
-        copy_object(&src.commits_path(), &dst.commits_path(), hash, &mut stats)?;
+        copy_object(src, dst, ObjectKind::Commit, hash, &mut stats)?;
     }
 
     Ok(stats)
 }
 
-/// copy a single object file
 fn copy_object(
-    src_dir: &Path,
-    dst_dir: &Path,
+    src: &Repo,
+    dst: &Repo,
+    kind: ObjectKind,
     hash: &Hash,
     stats: &mut TransferStats,
 ) -> Result<()> {
-    let hex = hash.to_hex();
-    let prefix = &hex[..2];
-    let suffix = &hex[2..];
-
-    let src_path = src_dir.join(prefix).join(suffix);
-    let dst_path = dst_dir.join(prefix).join(suffix);
-
-    if dst_path.exists() {
+    let object = read_transfer_object(src, kind, hash)?;
+    if !install_transfer_object(dst, &object)? {
         stats.skipped += 1;
         return Ok(());
     }
-
-    // ensure parent directory exists
-    if let Some(parent) = dst_path.parent() {
-        fs::create_dir_all(parent).with_path(parent)?;
-    }
-
-    // try hardlink first (same filesystem), fall back to copy
-    if fs::hard_link(&src_path, &dst_path).is_ok() {
-        stats.hardlinked += 1;
-    } else {
-        copy_object_file(&src_path, &dst_path, stats)?;
-    }
-
+    stats.bytes_transferred += object.data.len() as u64;
+    stats.copied += 1;
     Ok(())
 }
 
-fn copy_object_file(src_path: &Path, dst_path: &Path, stats: &mut TransferStats) -> Result<()> {
-    let content = fs::read(src_path).with_path(src_path)?;
-    let mode = fs::metadata(src_path)
-        .with_path(src_path)?
-        .permissions()
-        .mode()
-        & 0o7777;
-    stats.bytes_transferred += content.len() as u64;
-    fs::write(dst_path, &content).with_path(dst_path)?;
-    fs::set_permissions(dst_path, Permissions::from_mode(mode)).with_path(dst_path)?;
-    stats.copied += 1;
+pub(crate) fn read_transfer_object(
+    repo: &Repo,
+    kind: ObjectKind,
+    hash: &Hash,
+) -> Result<TransferObject> {
+    let path = object_path(repo, kind, hash);
+    let data = fs::read(&path).with_path(&path)?;
+    let metadata = if kind == ObjectKind::Blob {
+        let stored = fs::metadata(&path).with_path(&path)?;
+        if !stored.is_file() {
+            return Err(Error::CorruptObject(*hash));
+        }
+        let namespace = &repo.config().namespace;
+        Some(BlobMetadata {
+            uid: outside_to_inside(stored.uid(), &namespace.uid_map)
+                .ok_or(Error::UnmappedUid(stored.uid()))?,
+            gid: outside_to_inside(stored.gid(), &namespace.gid_map)
+                .ok_or(Error::UnmappedGid(stored.gid()))?,
+            mode: stored.mode(),
+        })
+    } else {
+        None
+    };
+    Ok(TransferObject {
+        kind,
+        hash: *hash,
+        data,
+        metadata,
+    })
+}
+
+pub(crate) fn install_transfer_object(repo: &Repo, object: &TransferObject) -> Result<bool> {
+    if object.kind != ObjectKind::Blob {
+        let actual = Hash::from_bytes(*blake3::hash(&object.data).as_bytes());
+        if actual != object.hash {
+            return Err(Error::CorruptObject(object.hash));
+        }
+    }
+
+    let destination = object_path(repo, object.kind, &object.hash);
+    if destination.exists() {
+        return Ok(false);
+    }
+    let parent = destination.parent().ok_or_else(|| Error::Io {
+        path: destination.clone(),
+        source: std::io::Error::other("object path has no parent"),
+    })?;
+    fs::create_dir_all(parent).with_path(parent)?;
+
+    let temporary = repo.tmp_path().join(uuid::Uuid::new_v4().to_string());
+    let result = install_temporary(repo, object, &temporary, &destination);
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn install_temporary(
+    repo: &Repo,
+    object: &TransferObject,
+    temporary: &Path,
+    destination: &Path,
+) -> Result<bool> {
+    let mut file = File::create(temporary).with_path(temporary)?;
+    file.write_all(&object.data).with_path(temporary)?;
+    file.sync_all().with_path(temporary)?;
+
+    if object.kind == ObjectKind::Blob {
+        let metadata = object.metadata.ok_or_else(|| Error::Transport {
+            message: format!("blob {} has no logical metadata", object.hash),
+        })?;
+        let namespace = &repo.config().namespace;
+        let uid = inside_to_outside(metadata.uid, &namespace.uid_map)
+            .ok_or(Error::UnmappedUid(metadata.uid))?;
+        let gid = inside_to_outside(metadata.gid, &namespace.gid_map)
+            .ok_or(Error::UnmappedGid(metadata.gid))?;
+        fs::set_permissions(temporary, Permissions::from_mode(metadata.mode & 0o7777))
+            .with_path(temporary)?;
+        let current_uid = nix::unistd::getuid().as_raw();
+        let current_gid = nix::unistd::getgid().as_raw();
+        if uid != current_uid || gid != current_gid {
+            nix::unistd::chown(
+                temporary,
+                Some(nix::unistd::Uid::from_raw(uid)),
+                Some(nix::unistd::Gid::from_raw(gid)),
+            )
+            .map_err(|error| Error::Io {
+                path: temporary.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, error),
+            })?;
+        }
+    }
+
+    let installed = match fs::hard_link(temporary, destination) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(source) => {
+            return Err(Error::Io {
+                path: destination.to_path_buf(),
+                source,
+            })
+        }
+    };
+    fs::remove_file(temporary).with_path(temporary)?;
+    let parent = destination.parent().expect("checked parent");
+    File::open(parent)
+        .with_path(parent)?
+        .sync_all()
+        .with_path(parent)?;
+    Ok(installed)
+}
+
+pub(crate) fn remove_objects(repo: &Repo, objects: &ObjectSet) -> Result<()> {
+    for (kind, hashes) in [
+        (ObjectKind::Blob, &objects.blobs),
+        (ObjectKind::Tree, &objects.trees),
+        (ObjectKind::Commit, &objects.commits),
+    ] {
+        for hash in hashes {
+            let path = object_path(repo, kind, hash);
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(Error::Io {
+                        path,
+                        source: error,
+                    })
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+pub(crate) fn object_path(repo: &Repo, kind: ObjectKind, hash: &Hash) -> std::path::PathBuf {
+    let (prefix, suffix) = hash.to_path_components();
+    let base = match kind {
+        ObjectKind::Blob => repo.blobs_path(),
+        ObjectKind::Tree => repo.trees_path(),
+        ObjectKind::Commit => repo.commits_path(),
+    };
+    base.join(prefix).join(suffix)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObjectKind {
+    Blob,
+    Tree,
+    Commit,
+}
+
+impl ObjectKind {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        match value {
+            "blob" => Ok(Self::Blob),
+            "tree" => Ok(Self::Tree),
+            "commit" => Ok(Self::Commit),
+            _ => Err(Error::InvalidObjectType(value.to_string())),
+        }
+    }
+}
+
+impl fmt::Display for ObjectKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Blob => "blob",
+            Self::Tree => "tree",
+            Self::Commit => "commit",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BlobMetadata {
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+    pub(crate) mode: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TransferObject {
+    pub(crate) kind: ObjectKind,
+    pub(crate) hash: Hash,
+    pub(crate) data: Vec<u8>,
+    pub(crate) metadata: Option<BlobMetadata>,
 }
 
 /// list all objects in a repository
@@ -102,7 +257,7 @@ fn list_objects_in_dir(dir: &Path) -> Result<Vec<Hash>> {
             path: dir.to_path_buf(),
             source: e
                 .into_io_error()
-                .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")),
+                .unwrap_or_else(|| std::io::Error::other("walkdir error")),
         })?;
 
         if !entry.file_type().is_file() {
@@ -145,6 +300,14 @@ impl ObjectSet {
 
     pub fn total_count(&self) -> usize {
         self.blobs.len() + self.trees.len() + self.commits.len()
+    }
+
+    pub(crate) fn push(&mut self, kind: ObjectKind, hash: Hash) {
+        match kind {
+            ObjectKind::Blob => self.blobs.push(hash),
+            ObjectKind::Tree => self.trees.push(hash),
+            ObjectKind::Commit => self.commits.push(hash),
+        }
     }
 }
 
@@ -209,20 +372,23 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_object_file_preserves_object_modes() {
+    fn test_transfer_object_preserves_blob_metadata() {
         let dir = tempdir().unwrap();
+        let source = Repo::init(&dir.path().join("source-repo")).unwrap();
+        let destination = Repo::init(&dir.path().join("destination-repo")).unwrap();
+        let namespace = &source.config().namespace;
+        let current_uid = nix::unistd::getuid().as_raw();
+        let current_gid = nix::unistd::getgid().as_raw();
+        let uid = outside_to_inside(current_uid, &namespace.uid_map).unwrap();
+        let gid = outside_to_inside(current_gid, &namespace.gid_map).unwrap();
+        let hash = crate::write_blob(&source, b"content", uid, gid, 0o100755, &[]).unwrap();
+        let object = read_transfer_object(&source, ObjectKind::Blob, &hash).unwrap();
 
-        let src_blob = dir.path().join("src-object");
-        let dst_blob = dir.path().join("dst-object");
-        fs::write(&src_blob, "content").unwrap();
-        fs::set_permissions(&src_blob, Permissions::from_mode(0o755)).unwrap();
+        assert!(install_transfer_object(&destination, &object).unwrap());
 
-        let mut stats = TransferStats::default();
-        copy_object_file(&src_blob, &dst_blob, &mut stats).unwrap();
-        assert_eq!(stats.bytes_transferred, 7);
-        assert_eq!(stats.copied, 1);
-
-        let copied_mode = fs::metadata(dst_blob).unwrap().permissions().mode() & 0o7777;
-        assert_eq!(copied_mode, 0o755);
+        let copied = fs::metadata(object_path(&destination, ObjectKind::Blob, &hash)).unwrap();
+        assert_eq!(copied.mode() & 0o7777, 0o755);
+        assert_eq!(copied.uid(), current_uid);
+        assert_eq!(copied.gid(), current_gid);
     }
 }

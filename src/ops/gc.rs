@@ -154,7 +154,7 @@ fn sweep_objects(
             path: dir.to_path_buf(),
             source: e
                 .into_io_error()
-                .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")),
+                .unwrap_or_else(|| std::io::Error::other("walkdir error")),
         })?;
 
         if !entry.file_type().is_file() {
@@ -189,9 +189,9 @@ fn sweep_objects(
         for entry in WalkDir::new(dir).min_depth(1).max_depth(1) {
             let entry = entry.map_err(|e| crate::Error::Io {
                 path: dir.to_path_buf(),
-                source: e.into_io_error().unwrap_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::Other, "walkdir error")
-                }),
+                source: e
+                    .into_io_error()
+                    .unwrap_or_else(|| std::io::Error::other("walkdir error")),
             })?;
 
             if entry.file_type().is_dir() {

@@ -41,9 +41,16 @@ pub fn commit_with_metadata(
         let path = entry.path();
         if let Ok(meta) = FileMetadata::from_path(path) {
             if meta.file_type == FileType::Regular && meta.could_be_hardlink() {
-                let rel_path = path.strip_prefix(source).unwrap().to_string_lossy().to_string();
+                let rel_path = path
+                    .strip_prefix(source)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
                 let key = (meta.dev, meta.ino);
-                hardlink_map.entry(key).or_insert_with(Vec::new).push(rel_path);
+                hardlink_map
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .push(rel_path);
             }
         }
     }
@@ -131,7 +138,7 @@ fn commit_tree_parallel(
         .with_path(dir)?
         .collect::<std::io::Result<Vec<_>>>()
         .with_path(dir)?;
-    dir_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    dir_entries.sort_by_key(|a| a.file_name());
 
     // separate directories from files for different processing strategies
     let mut directories = Vec::new();
@@ -309,7 +316,7 @@ fn commit_tree_parallel(
     // combine and sort entries by name
     let mut entries: Vec<TreeEntry> = dir_entries
         .into_iter()
-        .chain(file_entries.into_iter())
+        .chain(file_entries)
         .map(|e| TreeEntry::new(e.name, e.kind))
         .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));

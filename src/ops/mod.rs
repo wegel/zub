@@ -29,7 +29,7 @@ pub use log::{log, LogEntry};
 pub use ls_tree::{ls_tree, ls_tree_recursive, LsTreeEntry, LsTreeOptions};
 pub use map::{map, MapOptions, MapStats};
 pub use select::{select_tree, select_tree_from_hash};
-pub use stats::{du, du_tree, PathSize, RefSize, RepoStats, stats};
+pub use stats::{du, du_tree, stats, PathSize, RefSize, RepoStats};
 pub use truncate::{truncate_history, TruncateStats};
 pub use union::{union as union_trees, ConflictResolution, UnionOptions};
 pub use union_checkout::{checkout_union as union_checkout, UnionCheckoutOptions};

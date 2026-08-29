@@ -238,7 +238,12 @@ impl EntryKind {
     }
 
     /// create a sparse regular file entry
-    pub fn sparse(hash: Hash, size: u64, sparse_map: Vec<SparseRegion>, xattrs: Vec<Xattr>) -> Self {
+    pub fn sparse(
+        hash: Hash,
+        size: u64,
+        sparse_map: Vec<SparseRegion>,
+        xattrs: Vec<Xattr>,
+    ) -> Self {
         Self::Regular {
             hash,
             size,
@@ -326,13 +331,19 @@ mod tests {
 
     #[test]
     fn test_tree_rejects_empty_name() {
-        let entries = vec![TreeEntry::new("", EntryKind::regular(Hash::ZERO, 0, vec![]))];
+        let entries = vec![TreeEntry::new(
+            "",
+            EntryKind::regular(Hash::ZERO, 0, vec![]),
+        )];
         assert!(Tree::new(entries).is_err());
     }
 
     #[test]
     fn test_tree_rejects_slash_in_name() {
-        let entries = vec![TreeEntry::new("foo/bar", EntryKind::regular(Hash::ZERO, 0, vec![]))];
+        let entries = vec![TreeEntry::new(
+            "foo/bar",
+            EntryKind::regular(Hash::ZERO, 0, vec![]),
+        )];
         assert!(Tree::new(entries).is_err());
     }
 
@@ -347,13 +358,19 @@ mod tests {
 
     #[test]
     fn test_tree_rejects_dot() {
-        let entries = vec![TreeEntry::new(".", EntryKind::regular(Hash::ZERO, 0, vec![]))];
+        let entries = vec![TreeEntry::new(
+            ".",
+            EntryKind::regular(Hash::ZERO, 0, vec![]),
+        )];
         assert!(Tree::new(entries).is_err());
     }
 
     #[test]
     fn test_tree_rejects_dotdot() {
-        let entries = vec![TreeEntry::new("..", EntryKind::regular(Hash::ZERO, 0, vec![]))];
+        let entries = vec![TreeEntry::new(
+            "..",
+            EntryKind::regular(Hash::ZERO, 0, vec![]),
+        )];
         assert!(Tree::new(entries).is_err());
     }
 
@@ -368,8 +385,14 @@ mod tests {
 
     #[test]
     fn test_entry_kind_type_names() {
-        assert_eq!(EntryKind::regular(Hash::ZERO, 0, vec![]).type_name(), "regular");
-        assert_eq!(EntryKind::symlink(Hash::ZERO, vec![]).type_name(), "symlink");
+        assert_eq!(
+            EntryKind::regular(Hash::ZERO, 0, vec![]).type_name(),
+            "regular"
+        );
+        assert_eq!(
+            EntryKind::symlink(Hash::ZERO, vec![]).type_name(),
+            "symlink"
+        );
         assert_eq!(
             EntryKind::directory(Hash::ZERO, 0, 0, 0o755).type_name(),
             "directory"

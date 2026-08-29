@@ -354,7 +354,7 @@ mod tests {
 
         // path should be blobs/XX/YYYY...
         let hex = hash.to_hex();
-        assert!(path.ends_with(&format!("{}/{}", &hex[..2], &hex[2..])));
+        assert!(path.ends_with(format!("{}/{}", &hex[..2], &hex[2..])));
     }
 
     #[test]

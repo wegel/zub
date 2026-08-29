@@ -41,14 +41,12 @@ mod tests {
 
     #[test]
     fn test_artifact_new() {
-        let tree = Hash::from_hex(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .unwrap();
-        let manifest_hash = Hash::from_hex(
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        )
-        .unwrap();
+        let tree =
+            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .unwrap();
+        let manifest_hash =
+            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .unwrap();
 
         let a = Artifact::new(tree, manifest_hash, "bundles/dev");
         assert_eq!(a.tree, tree);
@@ -58,14 +56,12 @@ mod tests {
 
     #[test]
     fn test_artifact_hash_deterministic() {
-        let tree = Hash::from_hex(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .unwrap();
-        let manifest_hash = Hash::from_hex(
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        )
-        .unwrap();
+        let tree =
+            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .unwrap();
+        let manifest_hash =
+            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .unwrap();
 
         let a1 = Artifact::new(tree, manifest_hash, "bundles/dev");
         let a2 = Artifact::new(tree, manifest_hash, "bundles/dev");
@@ -75,14 +71,12 @@ mod tests {
 
     #[test]
     fn test_artifact_hash_differs_by_output() {
-        let tree = Hash::from_hex(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .unwrap();
-        let manifest_hash = Hash::from_hex(
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        )
-        .unwrap();
+        let tree =
+            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .unwrap();
+        let manifest_hash =
+            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .unwrap();
 
         let a1 = Artifact::new(tree, manifest_hash, "bundles/dev");
         let a2 = Artifact::new(tree, manifest_hash, "bundles/full");
@@ -92,14 +86,12 @@ mod tests {
 
     #[test]
     fn test_artifact_cbor_roundtrip() {
-        let tree = Hash::from_hex(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .unwrap();
-        let manifest_hash = Hash::from_hex(
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        )
-        .unwrap();
+        let tree =
+            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .unwrap();
+        let manifest_hash =
+            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .unwrap();
 
         let a = Artifact::new(tree, manifest_hash, "outputs/bin");
 

@@ -30,30 +30,19 @@ pub struct RepoStats {
 
 /// collect repository statistics
 pub fn stats(repo: &Repo) -> Result<RepoStats> {
-    let mut s = RepoStats::default();
-
-    // count refs
-    s.total_refs = list_refs(repo)?.len();
-
     // count and measure objects on disk
     let (blobs, blob_bytes) = count_objects(&repo.blobs_path());
     let (trees, tree_bytes) = count_objects(&repo.trees_path());
     let (commits, commit_bytes) = count_objects(&repo.commits_path());
-
-    s.total_blobs = blobs;
-    s.total_blobs_bytes = blob_bytes;
-    s.total_trees = trees;
-    s.total_trees_bytes = tree_bytes;
-    s.total_commits = commits;
-    s.total_commits_bytes = commit_bytes;
 
     // mark reachable objects
     let mut reachable_blobs = HashSet::new();
     let mut reachable_trees = HashSet::new();
     let mut reachable_commits = HashSet::new();
 
-    for ref_name in list_refs(repo)? {
-        let commit_hash = crate::refs::read_ref(repo, &ref_name)?;
+    let refs = list_refs(repo)?;
+    for ref_name in &refs {
+        let commit_hash = crate::refs::read_ref(repo, ref_name)?;
         mark_commit(
             repo,
             &commit_hash,
@@ -63,14 +52,19 @@ pub fn stats(repo: &Repo) -> Result<RepoStats> {
         )?;
     }
 
-    s.reachable_blobs = reachable_blobs.len();
-    s.reachable_trees = reachable_trees.len();
-    s.reachable_commits = reachable_commits.len();
-
-    // calculate unreachable blob bytes
-    s.unreachable_blobs_bytes = calculate_unreachable_bytes(&repo.blobs_path(), &reachable_blobs);
-
-    Ok(s)
+    Ok(RepoStats {
+        total_blobs: blobs,
+        total_trees: trees,
+        total_commits: commits,
+        total_refs: refs.len(),
+        total_blobs_bytes: blob_bytes,
+        total_trees_bytes: tree_bytes,
+        total_commits_bytes: commit_bytes,
+        reachable_blobs: reachable_blobs.len(),
+        reachable_trees: reachable_trees.len(),
+        reachable_commits: reachable_commits.len(),
+        unreachable_blobs_bytes: calculate_unreachable_bytes(&repo.blobs_path(), &reachable_blobs),
+    })
 }
 
 fn count_objects(dir: &std::path::Path) -> (usize, u64) {
@@ -81,13 +75,16 @@ fn count_objects(dir: &std::path::Path) -> (usize, u64) {
     let mut count = 0;
     let mut bytes = 0;
 
-    for entry in WalkDir::new(dir).min_depth(2).max_depth(2) {
-        if let Ok(entry) = entry {
-            if entry.file_type().is_file() {
-                count += 1;
-                if let Ok(meta) = fs::metadata(entry.path()) {
-                    bytes += meta.len();
-                }
+    for entry in WalkDir::new(dir)
+        .min_depth(2)
+        .max_depth(2)
+        .into_iter()
+        .flatten()
+    {
+        if entry.file_type().is_file() {
+            count += 1;
+            if let Ok(meta) = fs::metadata(entry.path()) {
+                bytes += meta.len();
             }
         }
     }
@@ -102,26 +99,29 @@ fn calculate_unreachable_bytes(dir: &std::path::Path, reachable: &HashSet<Hash>)
 
     let mut bytes = 0;
 
-    for entry in WalkDir::new(dir).min_depth(2).max_depth(2) {
-        if let Ok(entry) = entry {
-            if !entry.file_type().is_file() {
-                continue;
-            }
+    for entry in WalkDir::new(dir)
+        .min_depth(2)
+        .max_depth(2)
+        .into_iter()
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
 
-            let path = entry.path();
-            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let parent_name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let parent_name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
 
-            let hex = format!("{}{}", parent_name, file_name);
-            if let Ok(hash) = Hash::from_hex(&hex) {
-                if !reachable.contains(&hash) {
-                    if let Ok(meta) = fs::metadata(path) {
-                        bytes += meta.len();
-                    }
+        let hex = format!("{}{}", parent_name, file_name);
+        if let Ok(hash) = Hash::from_hex(&hex) {
+            if !reachable.contains(&hash) {
+                if let Ok(meta) = fs::metadata(path) {
+                    bytes += meta.len();
                 }
             }
         }
@@ -239,25 +239,28 @@ fn build_blob_size_map(repo: &Repo) -> Result<HashMap<Hash, u64>> {
         return Ok(sizes);
     }
 
-    for entry in WalkDir::new(&blobs_path).min_depth(2).max_depth(2) {
-        if let Ok(entry) = entry {
-            if !entry.file_type().is_file() {
-                continue;
-            }
+    for entry in WalkDir::new(&blobs_path)
+        .min_depth(2)
+        .max_depth(2)
+        .into_iter()
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
 
-            let path = entry.path();
-            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let parent_name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let parent_name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
 
-            let hex = format!("{}{}", parent_name, file_name);
-            if let Ok(hash) = Hash::from_hex(&hex) {
-                if let Ok(meta) = fs::metadata(path) {
-                    sizes.insert(hash, meta.len());
-                }
+        let hex = format!("{}{}", parent_name, file_name);
+        if let Ok(hash) = Hash::from_hex(&hex) {
+            if let Ok(meta) = fs::metadata(path) {
+                sizes.insert(hash, meta.len());
             }
         }
     }
@@ -355,12 +358,12 @@ fn collect_tree_sizes(
 
         // record at the appropriate depth
         let current_depth = path.matches('/').count() + 1;
-        if current_depth <= depth {
-            if matches!(entry.kind, EntryKind::Directory { .. }) {
-                *results.entry(path).or_insert(0) += size;
-            } else if current_depth == depth || depth == 0 {
-                *results.entry(path).or_insert(0) += size;
-            }
+        if current_depth <= depth
+            && (matches!(entry.kind, EntryKind::Directory { .. })
+                || current_depth == depth
+                || depth == 0)
+        {
+            *results.entry(path).or_insert(0) += size;
         }
     }
 

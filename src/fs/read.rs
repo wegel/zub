@@ -202,9 +202,8 @@ mod tests {
         fs::write(&path, "content").unwrap();
 
         let meta = FileMetadata::from_path(&path).unwrap();
-        // just verify these are populated (actual values depend on current user)
-        assert!(meta.uid > 0 || meta.uid == 0);
-        assert!(meta.gid > 0 || meta.gid == 0);
+        assert_eq!(meta.uid, fs::metadata(&path).unwrap().uid());
+        assert_eq!(meta.gid, fs::metadata(&path).unwrap().gid());
     }
 
     #[test]

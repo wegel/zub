@@ -6,7 +6,7 @@ use crate::error::{Error, IoResultExt, Result};
 use crate::namespace::NsConfig;
 
 /// repository configuration stored in config.toml
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     /// namespace mapping for this repository
     pub namespace: NsConfig,
@@ -68,15 +68,6 @@ impl Config {
     /// get remote by name
     pub fn get_remote(&self, name: &str) -> Option<&Remote> {
         self.remotes.iter().find(|r| r.name == name)
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            namespace: NsConfig::default(),
-            remotes: vec![],
-        }
     }
 }
 

@@ -452,7 +452,12 @@ mod tests {
             Hash::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
                 .unwrap();
 
-        write_artifact_ref(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/bin", &artifact_hash).unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/outputs/bin",
+            &artifact_hash,
+        )
+        .unwrap();
 
         let read_hash = read_artifact_ref(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/bin").unwrap();
         assert_eq!(artifact_hash, read_hash);
@@ -464,12 +469,26 @@ mod tests {
 
         let artifact_hash = Hash::ZERO;
 
-        assert!(!artifact_ref_exists(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/bin"));
+        assert!(!artifact_ref_exists(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/outputs/bin"
+        ));
 
-        write_artifact_ref(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/bin", &artifact_hash).unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/outputs/bin",
+            &artifact_hash,
+        )
+        .unwrap();
 
-        assert!(artifact_ref_exists(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/bin"));
-        assert!(!artifact_ref_exists(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/lib"));
+        assert!(artifact_ref_exists(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/outputs/bin"
+        ));
+        assert!(!artifact_ref_exists(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/outputs/lib"
+        ));
     }
 
     #[test]
@@ -478,9 +497,24 @@ mod tests {
 
         let artifact_hash = Hash::ZERO;
 
-        write_artifact_ref(&repo, "x86_64/pkg/foo/1.0/abc123/bundles/dev", &artifact_hash).unwrap();
-        write_artifact_ref(&repo, "x86_64/pkg/foo/1.0/abc123/bundles/full", &artifact_hash).unwrap();
-        write_artifact_ref(&repo, "x86_64/pkg/bar/2.0/def456/outputs/bin", &artifact_hash).unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/bundles/dev",
+            &artifact_hash,
+        )
+        .unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/bundles/full",
+            &artifact_hash,
+        )
+        .unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/bar/2.0/def456/outputs/bin",
+            &artifact_hash,
+        )
+        .unwrap();
 
         let refs = list_artifact_refs(&repo).unwrap();
         assert_eq!(refs.len(), 3);
@@ -492,9 +526,24 @@ mod tests {
 
         let artifact_hash = Hash::ZERO;
 
-        write_artifact_ref(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/bin", &artifact_hash).unwrap();
-        write_artifact_ref(&repo, "x86_64/pkg/bar/2.0/def456/outputs/bin", &artifact_hash).unwrap();
-        write_artifact_ref(&repo, "x86_64/bootstrap/baz/1.0/ghi789/outputs/lib", &artifact_hash).unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/outputs/bin",
+            &artifact_hash,
+        )
+        .unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/bar/2.0/def456/outputs/bin",
+            &artifact_hash,
+        )
+        .unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/bootstrap/baz/1.0/ghi789/outputs/lib",
+            &artifact_hash,
+        )
+        .unwrap();
 
         let refs = list_artifact_refs_matching(&repo, "*/pkg/*").unwrap();
         assert_eq!(refs.len(), 2);
@@ -509,9 +558,24 @@ mod tests {
 
         let artifact_hash = Hash::ZERO;
 
-        write_artifact_ref(&repo, "x86_64/pkg/foo/1.0/abc123/outputs/bin", &artifact_hash).unwrap();
-        write_artifact_ref(&repo, "x86_64/pkg/bar/2.0/def456/outputs/bin", &artifact_hash).unwrap();
-        write_artifact_ref(&repo, "x86_64/bootstrap/baz/1.0/ghi789/outputs/lib", &artifact_hash).unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/foo/1.0/abc123/outputs/bin",
+            &artifact_hash,
+        )
+        .unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/pkg/bar/2.0/def456/outputs/bin",
+            &artifact_hash,
+        )
+        .unwrap();
+        write_artifact_ref(
+            &repo,
+            "x86_64/bootstrap/baz/1.0/ghi789/outputs/lib",
+            &artifact_hash,
+        )
+        .unwrap();
 
         let deleted = delete_artifact_refs_matching(&repo, "*/pkg/*").unwrap();
         assert_eq!(deleted.len(), 2);

@@ -80,7 +80,7 @@ pub fn create_block_device(
     mode: u32,
     xattrs: &[Xattr],
 ) -> Result<()> {
-    create_device_node(path, SFlag::S_IFBLK, major, minor, uid, gid, mode, xattrs)
+    create_device_node(path, SFlag::S_IFBLK, (major, minor), uid, gid, mode, xattrs)
 }
 
 /// create a character device
@@ -93,7 +93,7 @@ pub fn create_char_device(
     mode: u32,
     xattrs: &[Xattr],
 ) -> Result<()> {
-    create_device_node(path, SFlag::S_IFCHR, major, minor, uid, gid, mode, xattrs)
+    create_device_node(path, SFlag::S_IFCHR, (major, minor), uid, gid, mode, xattrs)
 }
 
 /// create a fifo (named pipe)
@@ -238,8 +238,7 @@ pub fn apply_metadata_graceful(
 fn create_device_node(
     path: &Path,
     sflag: SFlag,
-    major: u32,
-    minor: u32,
+    device: (u32, u32),
     uid: u32,
     gid: u32,
     mode: u32,
@@ -250,7 +249,7 @@ fn create_device_node(
         fs::remove_file(path).with_path(path)?;
     }
 
-    let dev = makedev(major as u64, minor as u64);
+    let dev = makedev(device.0 as u64, device.1 as u64);
 
     mknod(path, sflag, Mode::from_bits_truncate(mode), dev).map_err(|e| {
         if e == nix::errno::Errno::EPERM {

@@ -134,7 +134,10 @@ mod tests {
     fn test_tree_deduplication() {
         let (_dir, repo) = test_repo();
 
-        let entries = vec![TreeEntry::new("foo", EntryKind::regular(Hash::ZERO, 50, vec![]))];
+        let entries = vec![TreeEntry::new(
+            "foo",
+            EntryKind::regular(Hash::ZERO, 50, vec![]),
+        )];
         let tree = Tree::new(entries).unwrap();
 
         let h1 = write_tree(&repo, &tree).unwrap();

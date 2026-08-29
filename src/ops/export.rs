@@ -131,7 +131,7 @@ fn export_regular(
             fs::set_permissions(dest, meta.permissions()).with_path(dest)?;
             return Ok(());
         }
-        Some(regions) if regions.is_empty() => {
+        Some([]) => {
             fs::write(dest, b"").with_path(dest)?;
             return Ok(());
         }
