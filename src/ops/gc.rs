@@ -20,59 +20,62 @@ pub struct GcStats {
     pub bytes_freed: u64,
 }
 
+#[derive(Default)]
+struct Reachable {
+    blobs: HashSet<Hash>,
+    trees: HashSet<Hash>,
+    commits: HashSet<Hash>,
+    artifacts: HashSet<Hash>,
+}
+
 /// garbage collect unreachable objects
 pub fn gc(repo: &Repo, dry_run: bool) -> Result<GcStats> {
-    // mark phase: collect all reachable objects
-    let mut reachable_blobs = HashSet::new();
-    let mut reachable_trees = HashSet::new();
-    let mut reachable_commits = HashSet::new();
-    let mut reachable_artifacts = HashSet::new();
+    let mut reachable = Reachable::default();
+    mark_roots(repo, &mut reachable)?;
+    sweep(repo, &reachable, dry_run)
+}
 
-    // start from all refs
+fn mark_roots(repo: &Repo, reachable: &mut Reachable) -> Result<()> {
     for ref_name in list_refs(repo)? {
         let commit_hash = crate::refs::read_ref(repo, &ref_name)?;
         mark_commit(
             repo,
             &commit_hash,
-            &mut reachable_blobs,
-            &mut reachable_trees,
-            &mut reachable_commits,
+            &mut reachable.blobs,
+            &mut reachable.trees,
+            &mut reachable.commits,
         )?;
     }
-
     for root in &repo.config().gc_roots {
-        mark_deployments(repo, root, &mut reachable_blobs, &mut reachable_trees)?;
+        mark_deployments(repo, root, &mut reachable.blobs, &mut reachable.trees)?;
     }
-
     for reference in list_artifact_refs(repo)? {
-        reachable_artifacts.insert(read_artifact_ref(repo, &reference)?);
+        reachable
+            .artifacts
+            .insert(read_artifact_ref(repo, &reference)?);
     }
+    Ok(())
+}
 
-    // sweep phase: remove unmarked objects
+fn sweep(repo: &Repo, reachable: &Reachable, dry_run: bool) -> Result<GcStats> {
     let mut stats = GcStats::default();
-
-    // sweep blobs
     sweep_objects(
         &repo.blobs_path(),
-        &reachable_blobs,
+        &reachable.blobs,
         dry_run,
         &mut stats.blobs_removed,
         &mut stats.bytes_freed,
     )?;
-
-    // sweep trees
     sweep_objects(
         &repo.trees_path(),
-        &reachable_trees,
+        &reachable.trees,
         dry_run,
         &mut stats.trees_removed,
         &mut stats.bytes_freed,
     )?;
-
-    // sweep commits
     sweep_objects(
         &repo.commits_path(),
-        &reachable_commits,
+        &reachable.commits,
         dry_run,
         &mut stats.commits_removed,
         &mut stats.bytes_freed,
@@ -80,7 +83,7 @@ pub fn gc(repo: &Repo, dry_run: bool) -> Result<GcStats> {
 
     sweep_objects(
         &repo.artifacts_path(),
-        &reachable_artifacts,
+        &reachable.artifacts,
         dry_run,
         &mut stats.artifacts_removed,
         &mut stats.bytes_freed,
@@ -232,141 +235,27 @@ fn sweep_objects(
         }
     }
 
-    // clean up empty directories
     if !dry_run {
-        for entry in WalkDir::new(dir).min_depth(1).max_depth(1) {
-            let entry = entry.map_err(|e| crate::Error::Io {
-                path: dir.to_path_buf(),
-                source: e
-                    .into_io_error()
-                    .unwrap_or_else(|| std::io::Error::other("walkdir error")),
-            })?;
+        remove_empty_object_dirs(dir)?;
+    }
+    Ok(())
+}
 
-            if entry.file_type().is_dir() {
-                // try to remove if empty
-                let _ = fs::remove_dir(entry.path());
-            }
+fn remove_empty_object_dirs(dir: &std::path::Path) -> Result<()> {
+    for entry in WalkDir::new(dir).min_depth(1).max_depth(1) {
+        let entry = entry.map_err(|error| crate::Error::Io {
+            path: dir.to_path_buf(),
+            source: error
+                .into_io_error()
+                .unwrap_or_else(|| std::io::Error::other("walkdir error")),
+        })?;
+        if entry.file_type().is_dir() {
+            let _ = fs::remove_dir(entry.path());
         }
     }
-
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ops::commit::commit;
-    use crate::{delete_artifact_ref, write_named_artifact, Artifact, InterfaceArtifact};
-    use tempfile::tempdir;
-
-    fn test_repo() -> (tempfile::TempDir, Repo) {
-        let dir = tempdir().unwrap();
-        let repo_path = dir.path().join("repo");
-        let repo = Repo::init(&repo_path).unwrap();
-        (dir, repo)
-    }
-
-    #[test]
-    fn test_gc_keeps_reachable() {
-        let (dir, repo) = test_repo();
-
-        let source = dir.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("file.txt"), "content").unwrap();
-        commit(&repo, &source, "test", None, None).unwrap();
-
-        let stats = gc(&repo, false).unwrap();
-
-        // nothing should be removed
-        assert_eq!(stats.blobs_removed, 0);
-        assert_eq!(stats.trees_removed, 0);
-        assert_eq!(stats.commits_removed, 0);
-    }
-
-    #[test]
-    fn test_gc_dry_run() {
-        let (dir, repo) = test_repo();
-
-        let source = dir.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("file.txt"), "content").unwrap();
-        commit(&repo, &source, "test", None, None).unwrap();
-
-        // delete the ref
-        crate::refs::delete_ref(&repo, "test").unwrap();
-
-        // dry run
-        let stats = gc(&repo, true).unwrap();
-
-        // should report objects to remove
-        assert!(stats.blobs_removed > 0 || stats.trees_removed > 0 || stats.commits_removed > 0);
-
-        // but objects should still exist
-        let blobs_count = WalkDir::new(repo.blobs_path())
-            .min_depth(2)
-            .max_depth(2)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .count();
-        assert!(blobs_count > 0);
-    }
-
-    #[test]
-    fn test_gc_removes_unreachable() {
-        let (dir, repo) = test_repo();
-
-        let source = dir.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("file.txt"), "content").unwrap();
-        commit(&repo, &source, "test", None, None).unwrap();
-
-        // delete the ref
-        crate::refs::delete_ref(&repo, "test").unwrap();
-
-        // gc
-        let stats = gc(&repo, false).unwrap();
-
-        // should have removed objects
-        assert!(stats.blobs_removed > 0 || stats.trees_removed > 0 || stats.commits_removed > 0);
-    }
-
-    #[test]
-    fn configured_deployment_directory_keeps_its_tree() {
-        let (dir, mut repo) = test_repo();
-        let source = dir.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("file.txt"), "content").unwrap();
-        let commit = commit(&repo, &source, "test", None, None).unwrap();
-        let tree = read_commit(&repo, &commit).unwrap().tree;
-        crate::delete_ref(&repo, "test").unwrap();
-        let deployments = dir.path().join("deployments");
-        fs::create_dir_all(deployments.join(format!("{tree}.7"))).unwrap();
-        repo.config_mut().gc_roots.push(deployments);
-        repo.save_config().unwrap();
-
-        let stats = gc(&repo, false).unwrap();
-
-        assert_eq!(stats.trees_removed, 0);
-        assert_eq!(stats.blobs_removed, 0);
-        assert!(read_tree(&repo, &tree).is_ok());
-    }
-
-    #[test]
-    fn artifact_refs_control_artifact_collection() {
-        let (_dir, repo) = test_repo();
-        let artifact = Artifact::Interface(InterfaceArtifact {
-            schema: crate::ARTIFACT_SCHEMA,
-            output: Hash::from_bytes([1; 32]),
-            interface: Hash::from_bytes([2; 32]),
-            elf_blobs: Vec::new(),
-            headers: Vec::new(),
-        });
-        let hash = write_named_artifact(&repo, "interface/test", &artifact).unwrap();
-        assert_eq!(gc(&repo, false).unwrap().artifacts_removed, 0);
-
-        delete_artifact_ref(&repo, "interface/test").unwrap();
-        assert_eq!(gc(&repo, false).unwrap().artifacts_removed, 1);
-        assert!(!crate::artifact_exists(&repo, &hash));
-    }
-}
+#[path = "gc_tests.rs"]
+mod tests;

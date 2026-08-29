@@ -1,14 +1,13 @@
-use std::collections::HashSet;
-use std::fs;
-
-use walkdir::WalkDir;
-
 use crate::error::Result;
 use crate::hash::Hash;
 use crate::object::{read_artifact, read_commit, read_tree};
 use crate::refs::{list_artifact_refs, list_refs, read_artifact_ref};
 use crate::repo::Repo;
 use crate::types::EntryKind;
+use std::collections::HashSet;
+
+#[path = "fsck_store.rs"]
+mod store;
 
 /// fsck report
 #[derive(Debug, Default)]
@@ -65,104 +64,39 @@ impl std::fmt::Display for ObjectType {
 /// verify repository integrity
 pub fn fsck(repo: &Repo) -> Result<FsckReport> {
     let mut report = FsckReport::default();
-    let mut reachable_blobs = HashSet::new();
-    let mut reachable_trees = HashSet::new();
-    let mut reachable_commits = HashSet::new();
-    let mut reachable_artifacts = HashSet::new();
+    let mut reachable = Reachable::default();
+    check_reachable(repo, &mut reachable, &mut report)?;
+    store::check_stored_objects(repo, &reachable, &mut report)?;
+    Ok(report)
+}
 
-    // check all refs and their reachable objects
+#[derive(Default)]
+struct Reachable {
+    blobs: HashSet<Hash>,
+    trees: HashSet<Hash>,
+    commits: HashSet<Hash>,
+    artifacts: HashSet<Hash>,
+}
+
+fn check_reachable(repo: &Repo, reachable: &mut Reachable, report: &mut FsckReport) -> Result<()> {
     for ref_name in list_refs(repo)? {
         let commit_hash = crate::refs::read_ref(repo, &ref_name)?;
         check_commit(
             repo,
             &commit_hash,
             &ref_name,
-            &mut reachable_blobs,
-            &mut reachable_trees,
-            &mut reachable_commits,
-            &mut report,
+            &mut reachable.blobs,
+            &mut reachable.trees,
+            &mut reachable.commits,
+            report,
         )?;
     }
-
     for reference in list_artifact_refs(repo)? {
         let hash = read_artifact_ref(repo, &reference)?;
-        reachable_artifacts.insert(hash);
-        check_artifact(&reference, hash, repo, &mut report);
+        reachable.artifacts.insert(hash);
+        check_artifact(&reference, hash, repo, report);
     }
-
-    // find all objects on disk
-    let all_blobs = list_objects(&repo.blobs_path())?;
-    let all_trees = list_objects(&repo.trees_path())?;
-    let all_commits = list_objects(&repo.commits_path())?;
-    let all_artifacts = list_objects(&repo.artifacts_path())?;
-
-    // verify object hashes and find dangling objects
-    for hash in &all_blobs {
-        report.objects_checked += 1;
-        // Reachable blobs were verified with metadata from their tree entries.
-        // A dangling blob has no tree-held xattrs, so only its name is known.
-        if !reachable_blobs.contains(hash) {
-            report.dangling_objects.push(*hash);
-        }
-    }
-
-    for hash in &all_trees {
-        report.objects_checked += 1;
-
-        // verify tree hash
-        let path = crate::object::tree_path(repo, hash);
-        if let Ok(compressed) = fs::read(&path) {
-            let actual_hash = Hash::from_bytes(*blake3::hash(&compressed).as_bytes());
-            if actual_hash != *hash {
-                report.corrupt_objects.push(CorruptObject {
-                    hash: *hash,
-                    object_type: ObjectType::Tree,
-                    message: format!("hash mismatch: expected {}, zub{}", hash, actual_hash),
-                });
-            }
-        }
-
-        if !reachable_trees.contains(hash) {
-            report.dangling_objects.push(*hash);
-        }
-    }
-
-    for hash in &all_commits {
-        report.objects_checked += 1;
-
-        // verify commit hash
-        let path = crate::object::commit_path(repo, hash);
-        if let Ok(compressed) = fs::read(&path) {
-            let actual_hash = Hash::from_bytes(*blake3::hash(&compressed).as_bytes());
-            if actual_hash != *hash {
-                report.corrupt_objects.push(CorruptObject {
-                    hash: *hash,
-                    object_type: ObjectType::Commit,
-                    message: format!("hash mismatch: expected {}, zub{}", hash, actual_hash),
-                });
-            }
-        }
-
-        if !reachable_commits.contains(hash) {
-            report.dangling_objects.push(*hash);
-        }
-    }
-
-    for hash in &all_artifacts {
-        report.objects_checked += 1;
-        if let Err(error) = read_artifact(repo, hash) {
-            report.corrupt_objects.push(CorruptObject {
-                hash: *hash,
-                object_type: ObjectType::Artifact,
-                message: error.to_string(),
-            });
-        }
-        if !reachable_artifacts.contains(hash) {
-            report.dangling_objects.push(*hash);
-        }
-    }
-
-    Ok(report)
+    Ok(())
 }
 
 fn check_artifact(reference: &str, hash: Hash, repo: &Repo, report: &mut FsckReport) {
@@ -254,41 +188,14 @@ fn check_tree(
     reachable_trees.insert(*tree_hash);
 
     match read_tree(repo, tree_hash) {
-        Ok(tree) => {
-            for entry in tree.entries() {
-                match &entry.kind {
-                    EntryKind::Regular { hash, xattrs, .. } => check_blob(
-                        repo,
-                        hash,
-                        xattrs,
-                        false,
-                        format!("tree {tree_hash} entry {}", entry.name),
-                        reachable_blobs,
-                        report,
-                    )?,
-                    EntryKind::Symlink { hash, xattrs } => check_blob(
-                        repo,
-                        hash,
-                        xattrs,
-                        true,
-                        format!("tree {tree_hash} entry {}", entry.name),
-                        reachable_blobs,
-                        report,
-                    )?,
-                    EntryKind::Directory { hash, .. } => {
-                        check_tree(
-                            repo,
-                            hash,
-                            &format!("tree {} entry {}", tree_hash, entry.name),
-                            reachable_blobs,
-                            reachable_trees,
-                            report,
-                        )?;
-                    }
-                    _ => {}
-                }
-            }
-        }
+        Ok(tree) => check_tree_entries(
+            repo,
+            tree_hash,
+            &tree,
+            reachable_blobs,
+            reachable_trees,
+            report,
+        )?,
         Err(crate::Error::ObjectNotFound(_)) => {
             report.missing_objects.push(MissingObject {
                 hash: *tree_hash,
@@ -306,6 +213,49 @@ fn check_tree(
         Err(e) => return Err(e),
     }
 
+    Ok(())
+}
+
+fn check_tree_entries(
+    repo: &Repo,
+    tree_hash: &Hash,
+    tree: &crate::Tree,
+    reachable_blobs: &mut HashSet<Hash>,
+    reachable_trees: &mut HashSet<Hash>,
+    report: &mut FsckReport,
+) -> Result<()> {
+    for entry in tree.entries() {
+        let referenced_by = format!("tree {tree_hash} entry {}", entry.name);
+        match &entry.kind {
+            EntryKind::Regular { hash, xattrs, .. } => check_blob(
+                repo,
+                hash,
+                xattrs,
+                false,
+                referenced_by,
+                reachable_blobs,
+                report,
+            )?,
+            EntryKind::Symlink { hash, xattrs } => check_blob(
+                repo,
+                hash,
+                xattrs,
+                true,
+                referenced_by,
+                reachable_blobs,
+                report,
+            )?,
+            EntryKind::Directory { hash, .. } => check_tree(
+                repo,
+                hash,
+                &referenced_by,
+                reachable_blobs,
+                reachable_trees,
+                report,
+            )?,
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -334,42 +284,6 @@ fn check_blob(
         Err(error) => return Err(error),
     }
     Ok(())
-}
-
-fn list_objects(dir: &std::path::Path) -> Result<Vec<Hash>> {
-    let mut hashes = Vec::new();
-
-    if !dir.exists() {
-        return Ok(hashes);
-    }
-
-    for entry in WalkDir::new(dir).min_depth(2).max_depth(2) {
-        let entry = entry.map_err(|e| crate::Error::Io {
-            path: dir.to_path_buf(),
-            source: e
-                .into_io_error()
-                .unwrap_or_else(|| std::io::Error::other("walkdir error")),
-        })?;
-
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let parent_name = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        let hex = format!("{}{}", parent_name, file_name);
-        if let Ok(hash) = Hash::from_hex(&hex) {
-            hashes.push(hash);
-        }
-    }
-
-    Ok(hashes)
 }
 
 #[cfg(test)]
