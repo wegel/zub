@@ -11,7 +11,7 @@ use crate::repo::Repo;
 /// ref_name can contain slashes for hierarchical refs like "x86_64/pkg/foo/1.0/outputs/bin"
 pub fn write_ref(repo: &Repo, ref_name: &str, hash: &Hash) -> Result<()> {
     validate_ref_name(ref_name)?;
-    crate::index::prepare_commit(repo, *hash)?;
+    crate::index::ensure_commit_metadata(repo, *hash)?;
 
     let ref_path = ref_path(repo, ref_name);
 

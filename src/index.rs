@@ -8,8 +8,8 @@ use crate::error::{IoResultExt, Result};
 use crate::metadata::ensure_elf;
 use crate::{list_refs, read_commit, read_ref, read_tree, EntryKind, Hash, Repo};
 
-/// Prepare the derived metadata needed before a commit ref becomes visible.
-pub(crate) fn prepare_commit(repo: &Repo, commit: Hash) -> Result<()> {
+/// Derive or repair every rebuildable index and ELF artifact for a commit.
+pub fn ensure_commit_metadata(repo: &Repo, commit: Hash) -> Result<()> {
     if !crate::commit_path(repo, &commit).exists() {
         return Ok(());
     }
