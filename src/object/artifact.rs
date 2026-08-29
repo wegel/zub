@@ -4,8 +4,22 @@ use std::path::PathBuf;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::hash::Hash;
+use crate::refs::{read_artifact_ref, write_artifact_ref};
 use crate::repo::Repo;
 use crate::types::Artifact;
+
+/// Write an artifact object and atomically point a semantic key at it.
+pub fn write_named_artifact(repo: &Repo, key: &str, artifact: &Artifact) -> Result<Hash> {
+    let hash = write_artifact(repo, artifact)?;
+    write_artifact_ref(repo, key, &hash)?;
+    Ok(hash)
+}
+
+/// Read and verify the artifact object named by a semantic key.
+pub fn read_named_artifact(repo: &Repo, key: &str) -> Result<Artifact> {
+    let hash = read_artifact_ref(repo, key)?;
+    read_artifact(repo, &hash)
+}
 
 /// write an artifact to the object store
 ///
@@ -93,6 +107,7 @@ pub fn artifact_exists(repo: &Repo, hash: &Hash) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{InterfaceArtifact, ARTIFACT_SCHEMA};
     use tempfile::tempdir;
 
     fn test_repo() -> (tempfile::TempDir, Repo) {
@@ -102,18 +117,21 @@ mod tests {
         (dir, repo)
     }
 
+    fn artifact() -> Artifact {
+        Artifact::Interface(InterfaceArtifact {
+            schema: ARTIFACT_SCHEMA,
+            output: Hash::from_bytes([0xaa; 32]),
+            interface: Hash::from_bytes([0xbb; 32]),
+            elf_blobs: vec![Hash::from_bytes([0xcc; 32])],
+            headers: Vec::new(),
+        })
+    }
+
     #[test]
     fn test_write_and_read_artifact() {
         let (_dir, repo) = test_repo();
 
-        let tree =
-            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap();
-        let manifest_hash =
-            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .unwrap();
-
-        let artifact = Artifact::new(tree, manifest_hash, "bundles/dev");
+        let artifact = artifact();
         let expected_hash = artifact.compute_hash();
 
         let hash = write_artifact(&repo, &artifact).unwrap();
@@ -128,14 +146,7 @@ mod tests {
     fn test_artifact_deduplication() {
         let (_dir, repo) = test_repo();
 
-        let tree =
-            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap();
-        let manifest_hash =
-            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .unwrap();
-
-        let artifact = Artifact::new(tree, manifest_hash, "bundles/dev");
+        let artifact = artifact();
 
         let h1 = write_artifact(&repo, &artifact).unwrap();
         let h2 = write_artifact(&repo, &artifact).unwrap();
@@ -159,16 +170,8 @@ mod tests {
     fn test_artifact_hash_is_deterministic() {
         let (_dir, repo) = test_repo();
 
-        let tree =
-            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap();
-        let manifest_hash =
-            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .unwrap();
-
-        // create same artifact twice
-        let a1 = Artifact::new(tree, manifest_hash, "outputs/bin");
-        let a2 = Artifact::new(tree, manifest_hash, "outputs/bin");
+        let a1 = artifact();
+        let a2 = artifact();
 
         // hashes must be identical
         let h1 = write_artifact(&repo, &a1).unwrap();
@@ -177,5 +180,19 @@ mod tests {
 
         // and must match compute_hash()
         assert_eq!(h1, a1.compute_hash());
+    }
+
+    #[test]
+    fn named_artifact_round_trip() {
+        let (_directory, repo) = test_repo();
+        let artifact = artifact();
+
+        let hash = write_named_artifact(&repo, "interface/example", &artifact).unwrap();
+
+        assert_eq!(read_artifact_ref(&repo, "interface/example").unwrap(), hash);
+        assert_eq!(
+            read_named_artifact(&repo, "interface/example").unwrap(),
+            artifact
+        );
     }
 }

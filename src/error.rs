@@ -114,6 +114,9 @@ pub enum Error {
 
     #[error("metadata key not found: {0}")]
     MetadataKeyNotFound(String),
+
+    #[error("cannot derive ELF metadata for blob {hash}: {message}")]
+    ElfMetadata { hash: Hash, message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -35,6 +35,7 @@
 mod config;
 mod error;
 mod hash;
+mod metadata;
 mod namespace;
 mod object;
 mod refs;
@@ -48,14 +49,15 @@ pub mod types;
 pub use config::Config;
 pub use error::{Error, Result};
 pub use hash::{compute_blob_hash, Hash};
+pub use metadata::parse_elf;
 pub use namespace::{
     current_gid_map, current_uid_map, inside_to_outside, mappings_equal, outside_to_inside,
     parse_id_map, remap, MapEntry, NsConfig,
 };
 pub use object::{
     artifact_exists, artifact_path, blob_exists, commit_path, read_artifact, read_blob,
-    read_commit, read_tree, tree_path, verify_commit, write_artifact, write_blob, write_commit,
-    write_tree,
+    read_commit, read_named_artifact, read_tree, tree_path, verify_commit, write_artifact,
+    write_blob, write_commit, write_named_artifact, write_tree,
 };
 pub use ops::{du, du_tree, stats, truncate_history, PathSize, RefSize, RepoStats, TruncateStats};
 pub use refs::{
@@ -66,5 +68,6 @@ pub use refs::{
 };
 pub use repo::Repo;
 pub use types::{
-    Artifact, ChangeKind, Commit, DiffEntry, EntryKind, SparseRegion, Tree, TreeEntry, Xattr,
+    Artifact, ChangeKind, Commit, DiffEntry, ElfArtifact, ElfExport, ElfImport, EntryKind,
+    InterfaceArtifact, InterfaceHeader, SparseRegion, Tree, TreeEntry, Xattr, ARTIFACT_SCHEMA,
 };

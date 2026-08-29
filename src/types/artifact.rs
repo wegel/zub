@@ -1,104 +1,98 @@
+//! Typed metadata derived from immutable store objects.
+
 use serde::{Deserialize, Serialize};
 
-use crate::hash::Hash;
+use crate::Hash;
 
-/// a reproducible build artifact - deterministically content-addressed
-///
-/// the artifact hash is computed from (tree, manifest_hash, output), making it
-/// deterministic: same inputs always produce the same artifact hash.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Artifact {
-    /// root tree hash (the actual build output)
-    pub tree: Hash,
-    /// SHA256 of manifest content that produced this build
-    pub manifest_hash: Hash,
-    /// output identifier (e.g., "bundles/dev", "outputs/bin")
-    pub output: String,
+/// Current schema for every typed artifact.
+pub const ARTIFACT_SCHEMA: u32 = 1;
+
+/// Metadata that Zub can recreate from immutable objects.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Artifact {
+    /// Dynamic-linking facts from one ELF blob.
+    Elf(ElfArtifact),
+    /// A package output's exported interface and development headers.
+    Interface(InterfaceArtifact),
 }
 
 impl Artifact {
-    /// create a new artifact
-    pub fn new(tree: Hash, manifest_hash: Hash, output: impl Into<String>) -> Self {
-        Self {
-            tree,
-            manifest_hash,
-            output: output.into(),
-        }
-    }
-
-    /// compute the artifact hash - this is DETERMINISTIC
-    /// same (tree, manifest_hash, output) = same hash, always
+    /// Compute the content hash of the canonical CBOR representation.
     pub fn compute_hash(&self) -> Hash {
-        let mut buf = Vec::new();
-        ciborium::into_writer(self, &mut buf).expect("cbor serialization failed");
-        Hash::from_bytes(*blake3::hash(&buf).as_bytes())
+        let mut bytes = Vec::new();
+        ciborium::into_writer(self, &mut bytes).expect("artifact serialization failed");
+        Hash::from_bytes(*blake3::hash(&bytes).as_bytes())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Dynamic-linking facts derived from one ELF file.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ElfArtifact {
+    /// Artifact schema version.
+    pub schema: u32,
+    /// Blob whose bytes supplied these facts.
+    pub blob: Hash,
+    /// Dynamic object name from `DT_SONAME`.
+    pub soname: Option<Vec<u8>>,
+    /// Libraries requested by `DT_NEEDED`, in loader order.
+    pub needed: Vec<Vec<u8>>,
+    /// Search paths requested by `DT_RPATH`, in table order.
+    pub rpath: Vec<Vec<u8>>,
+    /// Search paths requested by `DT_RUNPATH`, in table order.
+    pub runpath: Vec<Vec<u8>>,
+    /// Undefined dynamic symbols, sorted by their complete identity.
+    pub imports: Vec<ElfImport>,
+    /// Defined dynamic symbols, sorted by their complete identity.
+    pub exports: Vec<ElfExport>,
+}
 
-    #[test]
-    fn test_artifact_new() {
-        let tree =
-            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap();
-        let manifest_hash =
-            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .unwrap();
+/// One undefined dynamic symbol.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct ElfImport {
+    /// Library named by the GNU version requirement, when present.
+    pub library: Vec<u8>,
+    /// Symbol name.
+    pub name: Vec<u8>,
+    /// GNU symbol version.
+    pub version: Option<Vec<u8>>,
+    /// Whether the symbol has weak binding.
+    pub weak: bool,
+}
 
-        let a = Artifact::new(tree, manifest_hash, "bundles/dev");
-        assert_eq!(a.tree, tree);
-        assert_eq!(a.manifest_hash, manifest_hash);
-        assert_eq!(a.output, "bundles/dev");
-    }
+/// One defined dynamic symbol.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct ElfExport {
+    /// Symbol name.
+    pub name: Vec<u8>,
+    /// GNU symbol version.
+    pub version: Option<Vec<u8>>,
+    /// ELF `STB_*` binding value.
+    pub binding: u8,
+    /// Whether the GNU version is hidden.
+    pub version_hidden: bool,
+}
 
-    #[test]
-    fn test_artifact_hash_deterministic() {
-        let tree =
-            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap();
-        let manifest_hash =
-            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .unwrap();
+/// One development header contributing to an interface hash.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct InterfaceHeader {
+    /// Absolute package path, such as `/usr/include/example.h`.
+    pub path: String,
+    /// Blob containing the header bytes.
+    pub blob: Hash,
+}
 
-        let a1 = Artifact::new(tree, manifest_hash, "bundles/dev");
-        let a2 = Artifact::new(tree, manifest_hash, "bundles/dev");
-
-        assert_eq!(a1.compute_hash(), a2.compute_hash());
-    }
-
-    #[test]
-    fn test_artifact_hash_differs_by_output() {
-        let tree =
-            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap();
-        let manifest_hash =
-            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .unwrap();
-
-        let a1 = Artifact::new(tree, manifest_hash, "bundles/dev");
-        let a2 = Artifact::new(tree, manifest_hash, "bundles/full");
-
-        assert_ne!(a1.compute_hash(), a2.compute_hash());
-    }
-
-    #[test]
-    fn test_artifact_cbor_roundtrip() {
-        let tree =
-            Hash::from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap();
-        let manifest_hash =
-            Hash::from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .unwrap();
-
-        let a = Artifact::new(tree, manifest_hash, "outputs/bin");
-
-        let mut bytes = Vec::new();
-        ciborium::into_writer(&a, &mut bytes).unwrap();
-
-        let parsed: Artifact = ciborium::from_reader(&bytes[..]).unwrap();
-        assert_eq!(a, parsed);
-    }
+/// Recomputable interface identity for one package output tree.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceArtifact {
+    /// Artifact schema version.
+    pub schema: u32,
+    /// Package output tree described by this artifact.
+    pub output: Hash,
+    /// BLAKE3 of the canonical interface stream.
+    pub interface: Hash,
+    /// ELF blobs whose exports contributed to the interface.
+    pub elf_blobs: Vec<Hash>,
+    /// Development headers whose paths and bytes contributed to the interface.
+    pub headers: Vec<InterfaceHeader>,
 }
