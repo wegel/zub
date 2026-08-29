@@ -29,6 +29,9 @@ pub enum Error {
     #[error("corrupt object: hash mismatch for {0}")]
     CorruptObject(Hash),
 
+    #[error("cannot union zero trees")]
+    EmptyUnion,
+
     #[error("path conflict during union: {0}")]
     UnionConflict(PathBuf),
 

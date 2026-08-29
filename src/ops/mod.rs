@@ -33,7 +33,7 @@ pub use plan::{builder_key, inspect_plan, witness_ref, PlanOutput, PlanReport, P
 pub use select::{select_tree, select_tree_from_hash};
 pub use stats::{du, du_tree, stats, PathSize, RefSize, RepoStats};
 pub use truncate::{truncate_history, TruncateStats};
-pub use union::{union as union_trees, ConflictResolution, UnionOptions};
+pub use union::{union as union_trees, union_tree_hashes, ConflictResolution, UnionOptions};
 pub use union_checkout::{checkout_union as union_checkout, UnionCheckoutOptions};
 
 /// map logical tree-entry ownership to the repository's on-disk namespace.
