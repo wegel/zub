@@ -156,7 +156,7 @@ fn hash_file(
 ) -> Result<Hash> {
     let mut file = File::open(path).with_path(path)?;
     let mut hasher = BlobHasher::new(uid, gid, mode, xattrs);
-    let mut buffer = [0; VERIFY_BUFFER_BYTES];
+    let mut buffer = vec![0; VERIFY_BUFFER_BYTES];
     let mut utf8_tail = Vec::with_capacity(4);
 
     loop {
