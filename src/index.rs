@@ -5,6 +5,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
+
 use crate::error::{IoResultExt, Result};
 use crate::metadata::ensure_elf;
 use crate::{list_refs, read_commit, read_ref, read_tree, EntryKind, Hash, Repo};
@@ -13,11 +15,41 @@ const TREE_MARKER_SCHEMA: &str = "zub-tree-metadata-v1";
 
 /// Derive or repair every rebuildable index and ELF artifact for a commit.
 pub fn ensure_commit_metadata(repo: &Repo, commit: Hash) -> Result<()> {
-    if !crate::commit_path(repo, &commit).exists() {
+    ensure_commits_metadata(repo, &[commit], 1)
+}
+
+/// Derive or repair indexes and ELF artifacts for several commits once each.
+pub fn ensure_commits_metadata(repo: &Repo, commits: &[Hash], workers: usize) -> Result<()> {
+    let mut roots = BTreeSet::new();
+    for commit in commits.iter().copied().collect::<BTreeSet<_>>() {
+        if crate::commit_path(repo, &commit).exists() {
+            roots.insert(read_commit(repo, &commit)?.tree);
+        }
+    }
+    let mut elf_blobs = BTreeSet::new();
+    for tree in roots {
+        elf_blobs.extend(collect_tree_elf(repo, &repo.index_path(), tree)?);
+    }
+    if elf_blobs.is_empty() {
         return Ok(());
     }
-    let tree = read_commit(repo, &commit)?.tree;
-    ensure_tree(repo, &repo.index_path(), tree).map(|_| ())
+    let elf_blobs = elf_blobs.into_iter().collect::<Vec<_>>();
+    let worker_count = workers.max(1).min(elf_blobs.len());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .stack_size(256 * 1024)
+        .build()
+        .map_err(|error| crate::Error::VerifyPool(error.to_string()))?;
+    let results = pool.install(|| {
+        elf_blobs
+            .par_iter()
+            .map(|blob| ensure_elf(repo, *blob))
+            .collect::<Vec<_>>()
+    });
+    for result in results {
+        result?;
+    }
+    Ok(())
 }
 
 /// Return sorted current refs whose current trees contain `blob`.
@@ -90,11 +122,16 @@ fn current_refs(repo: &Repo) -> Result<Vec<(String, Hash)>> {
 }
 
 fn ensure_tree(repo: &Repo, index: &Path, tree: Hash) -> Result<Vec<Hash>> {
+    let blobs = collect_tree_elf(repo, index, tree)?;
+    for blob in &blobs {
+        ensure_elf(repo, *blob)?;
+    }
+    Ok(blobs)
+}
+
+fn collect_tree_elf(repo: &Repo, index: &Path, tree: Hash) -> Result<Vec<Hash>> {
     let marker = tree_marker(index, tree);
     if let Some(blobs) = read_tree_marker(&marker)? {
-        for blob in &blobs {
-            ensure_elf(repo, *blob)?;
-        }
         return Ok(blobs);
     }
     let mut elf_blobs = BTreeSet::new();
@@ -110,7 +147,7 @@ fn ensure_tree(repo: &Repo, index: &Path, tree: Hash) -> Result<Vec<Hash>> {
                 write_marker(&blob_tree_marker(index, hash, tree))?;
             }
             EntryKind::Directory { hash, .. } => {
-                elf_blobs.extend(ensure_tree(repo, index, hash)?);
+                elf_blobs.extend(collect_tree_elf(repo, index, hash)?);
             }
             _ => {}
         }

@@ -50,7 +50,9 @@ pub mod types;
 pub use config::Config;
 pub use error::{Error, Result};
 pub use hash::{compute_blob_hash, Hash};
-pub use index::{ensure_commit_metadata, rebuild_index, refs_containing_blob};
+pub use index::{
+    ensure_commit_metadata, ensure_commits_metadata, rebuild_index, refs_containing_blob,
+};
 pub use metadata::parse_elf;
 pub use namespace::{
     current_gid_map, current_uid_map, inside_to_outside, mappings_equal, outside_to_inside,
