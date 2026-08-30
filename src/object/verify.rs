@@ -1,14 +1,19 @@
 use std::collections::HashSet;
 use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
-use crate::error::{Error, Result};
-use crate::hash::{compute_blob_hash, compute_symlink_hash, Hash};
+use crate::error::{Error, IoResultExt, Result};
+use crate::hash::{BlobHasher, Hash, SYMLINK_MODE};
 use crate::namespace::outside_to_inside;
 use crate::types::{EntryKind, Xattr};
 use crate::Repo;
 
-use super::{blob_path, read_blob, read_commit, read_tree};
+use super::{blob_path, read_commit, read_tree};
+
+const VERIFY_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Verify one commit and every object reachable from its root tree.
 ///
@@ -72,15 +77,58 @@ pub(crate) fn verify_blob(
         .ok_or(Error::UnmappedUid(metadata.uid()))?;
     let gid = outside_to_inside(metadata.gid(), &namespace.gid_map)
         .ok_or(Error::UnmappedGid(metadata.gid()))?;
-    let bytes = read_blob(repo, expected)?;
-    let actual = if symlink {
-        let target = std::str::from_utf8(&bytes).map_err(|_| Error::CorruptObject(*expected))?;
-        compute_symlink_hash(uid, gid, xattrs, target)
+    let mode = if symlink {
+        SYMLINK_MODE
     } else {
-        compute_blob_hash(uid, gid, metadata.mode(), xattrs, &bytes)
+        metadata.mode()
     };
+    let actual = hash_file(&path, *expected, uid, gid, mode, xattrs, symlink)?;
     if actual != *expected {
         return Err(Error::CorruptObject(*expected));
+    }
+    Ok(())
+}
+
+fn hash_file(
+    path: &Path,
+    expected: Hash,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    xattrs: &[Xattr],
+    require_utf8: bool,
+) -> Result<Hash> {
+    let mut file = File::open(path).with_path(path)?;
+    let mut hasher = BlobHasher::new(uid, gid, mode, xattrs);
+    let mut buffer = [0; VERIFY_BUFFER_BYTES];
+    let mut utf8_tail = Vec::with_capacity(4);
+
+    loop {
+        let length = file.read(&mut buffer).with_path(path)?;
+        if length == 0 {
+            break;
+        }
+        let bytes = &buffer[..length];
+        hasher.update(bytes);
+        if require_utf8 && validate_utf8(&mut utf8_tail, bytes).is_err() {
+            return Err(Error::CorruptObject(expected));
+        }
+    }
+    if require_utf8 && !utf8_tail.is_empty() {
+        return Err(Error::CorruptObject(expected));
+    }
+    Ok(hasher.finalize())
+}
+
+fn validate_utf8(tail: &mut Vec<u8>, bytes: &[u8]) -> std::result::Result<(), ()> {
+    tail.extend_from_slice(bytes);
+    match std::str::from_utf8(tail) {
+        Ok(_) => tail.clear(),
+        Err(error) if error.error_len().is_none() => {
+            let suffix = tail.split_off(error.valid_up_to());
+            *tail = suffix;
+        }
+        Err(_) => return Err(()),
     }
     Ok(())
 }
@@ -90,6 +138,7 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     use super::*;
+    use crate::hash::compute_blob_hash;
     use crate::namespace::outside_to_inside;
     use crate::object::{blob_path, write_blob, write_commit, write_tree};
     use crate::types::{Commit, Tree, TreeEntry};
@@ -125,6 +174,36 @@ mod tests {
         assert!(matches!(
             verify_commit(&repo, &commit),
             Err(Error::CorruptObject(hash)) if hash == blob
+        ));
+    }
+
+    #[test]
+    fn streams_content_and_validates_utf8_across_buffer_boundaries() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("blob");
+        let mut bytes = vec![b'a'; VERIFY_BUFFER_BYTES - 1];
+        bytes.extend_from_slice("é".as_bytes());
+        bytes.extend_from_slice(&vec![b'b'; VERIFY_BUFFER_BYTES]);
+        fs::write(&path, &bytes).unwrap();
+        let expected = compute_blob_hash(0, 0, SYMLINK_MODE, &[], &bytes);
+
+        assert_eq!(
+            hash_file(&path, expected, 0, 0, SYMLINK_MODE, &[], true).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_streamed_symlink_utf8() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("blob");
+        let bytes = [0xff];
+        fs::write(&path, bytes).unwrap();
+        let expected = compute_blob_hash(0, 0, SYMLINK_MODE, &[], &bytes);
+
+        assert!(matches!(
+            hash_file(&path, expected, 0, 0, SYMLINK_MODE, &[], true),
+            Err(Error::CorruptObject(hash)) if hash == expected
         ));
     }
 }
