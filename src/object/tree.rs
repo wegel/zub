@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::hash::Hash;
+use crate::object::ObjectDurability;
 use crate::repo::Repo;
 use crate::types::Tree;
 
@@ -12,6 +13,14 @@ use crate::types::Tree;
 /// trees are serialized as CBOR, then zstd compressed.
 /// the hash is computed over the compressed bytes.
 pub fn write_tree(repo: &Repo, tree: &Tree) -> Result<Hash> {
+    write_tree_with_durability(repo, tree, ObjectDurability::Immediate)
+}
+
+pub(crate) fn write_tree_with_durability(
+    repo: &Repo,
+    tree: &Tree,
+    durability: ObjectDurability,
+) -> Result<Hash> {
     // serialize to cbor
     let mut cbor_bytes = Vec::new();
     ciborium::into_writer(tree, &mut cbor_bytes)?;
@@ -42,15 +51,14 @@ pub fn write_tree(repo: &Repo, tree: &Tree) -> Result<Hash> {
     {
         let mut tmp_file = File::create(&tmp_path).with_path(&tmp_path)?;
         tmp_file.write_all(&compressed).with_path(&tmp_path)?;
-        tmp_file.sync_all().with_path(&tmp_path)?;
+        durability.sync_file(&tmp_file, &tmp_path)?;
     }
 
     // rename to final location
     fs::rename(&tmp_path, &tree_path).with_path(&tree_path)?;
 
     // fsync parent directory
-    let dir_file = File::open(&tree_dir).with_path(&tree_dir)?;
-    dir_file.sync_all().with_path(&tree_dir)?;
+    durability.sync_directory(&tree_dir)?;
 
     Ok(hash)
 }

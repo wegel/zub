@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, IoResultExt, Result};
 use crate::hash::{compute_blob_hash, Hash};
 use crate::namespace::inside_to_outside;
+use crate::object::ObjectDurability;
 use crate::repo::Repo;
 use crate::types::Xattr;
+
+pub(crate) const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 
 /// write a blob to the object store
 ///
@@ -24,6 +27,27 @@ pub fn write_blob(
     inside_gid: u32,
     mode: u32,
     xattrs: &[Xattr],
+) -> Result<Hash> {
+    write_blob_with_durability(
+        repo,
+        content,
+        inside_uid,
+        inside_gid,
+        mode,
+        xattrs,
+        ObjectDurability::Immediate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_blob_with_durability(
+    repo: &Repo,
+    content: &[u8],
+    inside_uid: u32,
+    inside_gid: u32,
+    mode: u32,
+    xattrs: &[Xattr],
+    durability: ObjectDurability,
 ) -> Result<Hash> {
     let hash = compute_blob_hash(inside_uid, inside_gid, mode, xattrs, content);
 
@@ -57,7 +81,7 @@ pub fn write_blob(
     {
         let mut tmp_file = File::create(&tmp_path).with_path(&tmp_path)?;
         tmp_file.write_all(content).with_path(&tmp_path)?;
-        tmp_file.sync_all().with_path(&tmp_path)?;
+        durability.sync_file(&tmp_file, &tmp_path)?;
     }
 
     // set permissions (before chown, so we have write access)
@@ -86,20 +110,20 @@ pub fn write_blob(
     fs::rename(&tmp_path, &blob_path).with_path(&blob_path)?;
 
     // fsync parent directory
-    fsync_dir(&blob_dir)?;
+    durability.sync_directory(&blob_dir)?;
 
     Ok(hash)
 }
 
-/// write a blob with streaming content (for large files)
-#[allow(dead_code)]
-pub fn write_blob_streaming<R: Read>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_blob_streaming_with_durability<R: Read>(
     repo: &Repo,
     reader: &mut R,
     inside_uid: u32,
     inside_gid: u32,
     mode: u32,
     xattrs: &[Xattr],
+    durability: ObjectDurability,
 ) -> Result<Hash> {
     // for streaming, we need to write to temp first, then compute hash
     let tmp_path = repo.tmp_path().join(uuid::Uuid::new_v4().to_string());
@@ -108,7 +132,7 @@ pub fn write_blob_streaming<R: Read>(
     let mut hasher = crate::hash::BlobHasher::new(inside_uid, inside_gid, mode, xattrs);
     {
         let mut tmp_file = File::create(&tmp_path).with_path(&tmp_path)?;
-        let mut buf = [0u8; 64 * 1024]; // 64KB buffer
+        let mut buf = [0u8; STREAM_BUFFER_BYTES];
         loop {
             let n = reader.read(&mut buf).with_path(&tmp_path)?;
             if n == 0 {
@@ -117,7 +141,7 @@ pub fn write_blob_streaming<R: Read>(
             hasher.update(&buf[..n]);
             tmp_file.write_all(&buf[..n]).with_path(&tmp_path)?;
         }
-        tmp_file.sync_all().with_path(&tmp_path)?;
+        durability.sync_file(&tmp_file, &tmp_path)?;
     }
 
     let hash = hasher.finalize();
@@ -164,7 +188,7 @@ pub fn write_blob_streaming<R: Read>(
 
     // rename to final location
     fs::rename(&tmp_path, &blob_path).with_path(&blob_path)?;
-    fsync_dir(&blob_dir)?;
+    durability.sync_directory(&blob_dir)?;
 
     Ok(hash)
 }
@@ -276,13 +300,6 @@ pub fn read_blob_to<W: Write>(repo: &Repo, hash: &Hash, writer: &mut W) -> Resul
     Ok(total)
 }
 
-/// fsync a directory
-fn fsync_dir(path: &Path) -> Result<()> {
-    let dir = File::open(path).with_path(path)?;
-    dir.sync_all().with_path(path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,11 +407,63 @@ mod tests {
         let content = b"streaming content test";
         let mut cursor = std::io::Cursor::new(content.as_slice());
 
-        let hash = write_blob_streaming(&repo, &mut cursor, uid, gid, 0o644, &[]).unwrap();
+        let hash = write_blob_streaming_with_durability(
+            &repo,
+            &mut cursor,
+            uid,
+            gid,
+            0o644,
+            &[],
+            ObjectDurability::Immediate,
+        )
+        .unwrap();
 
         // should match non-streaming hash
         let expected_hash = write_blob(&repo, content, uid, gid, 0o644, &[]).unwrap();
         assert_eq!(hash, expected_hash);
+    }
+
+    #[test]
+    fn streaming_write_bounds_memory_below_large_blob_size() {
+        struct Generated {
+            remaining: usize,
+            largest_request: usize,
+        }
+
+        impl Read for Generated {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.largest_request = self.largest_request.max(buffer.len());
+                let length = self.remaining.min(buffer.len());
+                buffer[..length].fill(0x5a);
+                self.remaining -= length;
+                Ok(length)
+            }
+        }
+
+        let (_dir, repo) = test_repo();
+        let (uid, gid) = current_ids();
+        let bytes = 129 * 1024 * 1024;
+        let mut generated = Generated {
+            remaining: bytes,
+            largest_request: 0,
+        };
+        let hash = write_blob_streaming_with_durability(
+            &repo,
+            &mut generated,
+            uid,
+            gid,
+            0o644,
+            &[],
+            ObjectDurability::Immediate,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::metadata(blob_path(&repo, &hash)).unwrap().len(),
+            bytes as u64
+        );
+        assert_eq!(generated.largest_request, STREAM_BUFFER_BYTES);
+        assert!(generated.largest_request <= 1024 * 1024);
     }
 
     #[test]

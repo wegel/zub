@@ -1,6 +1,6 @@
 //! Rebuildable indexes over immutable trees.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub fn ensure_commits_metadata(repo: &Repo, commits: &[Hash]) -> Result<()> {
     }
     let mut elf_blobs = BTreeSet::new();
     for tree in roots {
-        elf_blobs.extend(collect_tree_elf(repo, &repo.index_path(), tree)?);
+        elf_blobs.extend(collect_tree_elf(repo, &repo.index_path(), tree, false)?);
     }
     ensure_elf_set(repo, elf_blobs)
 }
@@ -34,13 +34,10 @@ pub fn ensure_commits_metadata(repo: &Repo, commits: &[Hash]) -> Result<()> {
 /// Return sorted current refs whose current trees contain `blob`.
 pub fn refs_containing_blob(repo: &Repo, blob: Hash) -> Result<Vec<String>> {
     let refs = current_refs(repo)?;
-    for (_, tree) in &refs {
-        ensure_tree(repo, &repo.index_path(), *tree)?;
-    }
-    let containing = indexed_trees(&repo.index_path(), blob)?;
     let mut matches = Vec::new();
+    let mut cached = HashMap::new();
     for (name, tree) in refs {
-        if contains_tree(repo, tree, &containing, &mut HashSet::new())? {
+        if tree_contains_blob(repo, tree, blob, &mut cached)? {
             matches.push(name);
         }
     }
@@ -101,32 +98,38 @@ fn current_refs(repo: &Repo) -> Result<Vec<(String, Hash)>> {
 }
 
 fn ensure_tree(repo: &Repo, index: &Path, tree: Hash) -> Result<Vec<Hash>> {
-    let blobs = collect_tree_elf(repo, index, tree)?;
+    let blobs = collect_tree_elf(repo, index, tree, true)?;
     for blob in &blobs {
         ensure_elf(repo, *blob)?;
     }
     Ok(blobs)
 }
 
-fn collect_tree_elf(repo: &Repo, index: &Path, tree: Hash) -> Result<Vec<Hash>> {
+fn collect_tree_elf(repo: &Repo, index: &Path, tree: Hash, reverse: bool) -> Result<Vec<Hash>> {
     let marker = tree_marker(index, tree);
-    if let Some(blobs) = read_tree_marker(&marker)? {
-        return Ok(blobs);
+    if !reverse {
+        if let Some(blobs) = read_tree_marker(&marker)? {
+            return Ok(blobs);
+        }
     }
     let mut elf_blobs = BTreeSet::new();
     for entry in read_tree(repo, &tree)?.entries() {
         match entry.kind {
             EntryKind::Regular { hash, .. } => {
-                write_marker(&blob_tree_marker(index, hash, tree))?;
+                if reverse {
+                    write_marker(&blob_tree_marker(index, hash, tree))?;
+                }
                 if ensure_elf(repo, hash)? {
                     elf_blobs.insert(hash);
                 }
             }
             EntryKind::Symlink { hash, .. } => {
-                write_marker(&blob_tree_marker(index, hash, tree))?;
+                if reverse {
+                    write_marker(&blob_tree_marker(index, hash, tree))?;
+                }
             }
             EntryKind::Directory { hash, .. } => {
-                elf_blobs.extend(collect_tree_elf(repo, index, hash)?);
+                elf_blobs.extend(collect_tree_elf(repo, index, hash, reverse)?);
             }
             _ => {}
         }
@@ -166,12 +169,8 @@ fn write_tree_marker(path: &Path, blobs: &[Hash]) -> Result<()> {
         for blob in blobs {
             writeln!(file, "{blob}").with_path(&temporary)?;
         }
-        file.sync_all().with_path(&temporary)?;
         fs::rename(&temporary, path).with_path(path)?;
-        File::open(parent)
-            .with_path(parent)?
-            .sync_all()
-            .with_path(parent)
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -179,45 +178,28 @@ fn write_tree_marker(path: &Path, blobs: &[Hash]) -> Result<()> {
     result
 }
 
-fn contains_tree(
+fn tree_contains_blob(
     repo: &Repo,
     tree: Hash,
-    targets: &HashSet<Hash>,
-    visited: &mut HashSet<Hash>,
+    target: Hash,
+    cached: &mut HashMap<Hash, bool>,
 ) -> Result<bool> {
-    if !visited.insert(tree) {
-        return Ok(false);
-    }
-    if targets.contains(&tree) {
-        return Ok(true);
+    if let Some(found) = cached.get(&tree) {
+        return Ok(*found);
     }
     for entry in read_tree(repo, &tree)?.entries() {
-        if let EntryKind::Directory { hash, .. } = entry.kind {
-            if contains_tree(repo, hash, targets, visited)? {
-                return Ok(true);
-            }
+        let found = match entry.kind {
+            EntryKind::Regular { hash, .. } | EntryKind::Symlink { hash, .. } => hash == target,
+            EntryKind::Directory { hash, .. } => tree_contains_blob(repo, hash, target, cached)?,
+            _ => false,
+        };
+        if found {
+            cached.insert(tree, true);
+            return Ok(true);
         }
     }
+    cached.insert(tree, false);
     Ok(false)
-}
-
-fn indexed_trees(index: &Path, blob: Hash) -> Result<HashSet<Hash>> {
-    let directory = blob_marker_dir(index, blob);
-    if !directory.exists() {
-        return Ok(HashSet::new());
-    }
-    let mut trees = HashSet::new();
-    for entry in fs::read_dir(&directory).with_path(&directory)? {
-        let entry = entry.with_path(&directory)?;
-        if entry.file_type().with_path(entry.path())?.is_file() {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Ok(hash) = Hash::from_hex(name) {
-                    trees.insert(hash);
-                }
-            }
-        }
-    }
-    Ok(trees)
 }
 
 fn write_marker(path: &Path) -> Result<()> {

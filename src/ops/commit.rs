@@ -1,19 +1,23 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::Instant;
 
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::error::{IoResultExt, Result};
-use crate::fs::{detect_sparse_regions, read_data_regions, read_xattrs, FileMetadata, FileType};
+use crate::fs::{detect_sparse_regions, read_xattrs, FileMetadata, FileType};
 use crate::hash::{compute_symlink_hash, Hash, SYMLINK_MODE};
 use crate::namespace::outside_to_inside;
-use crate::object::{write_blob, write_commit, write_tree};
+use crate::object::{
+    sync_repository, write_blob_streaming_with_durability, write_blob_with_durability,
+    write_commit_with_durability, write_tree_with_durability, ObjectDurability,
+};
 use crate::refs::write_ref;
 use crate::repo::Repo;
-use crate::types::{Commit, EntryKind, Tree, TreeEntry};
+use crate::types::{Commit, EntryKind, SparseRegion, Tree, TreeEntry};
 
 /// commit a directory tree to a ref
 pub fn commit(
@@ -67,9 +71,17 @@ pub fn commit_with_metadata(
     }
 
     // phase 2: commit the root tree with parallel file processing
-    let tree_hash = commit_tree_parallel(repo, source, "", &hardlink_targets)?;
+    let started = Instant::now();
+    let durability = ObjectDurability::Deferred;
+    let tree_hash = commit_tree_parallel(repo, source, "", &hardlink_targets, durability)?;
+    trace("tree", started);
 
-    commit_tree_with_metadata(repo, &tree_hash, ref_name, message, author, metadata)
+    let started = Instant::now();
+    let result = commit_tree_with_metadata_inner(
+        repo, &tree_hash, ref_name, message, author, metadata, durability,
+    );
+    trace("commit-ref", started);
+    result
 }
 
 /// Commit an existing tree to a ref without materializing it on disk.
@@ -92,6 +104,27 @@ pub fn commit_tree_with_metadata(
     author: Option<&str>,
     metadata: &[(&str, &str)],
 ) -> Result<Hash> {
+    commit_tree_with_metadata_inner(
+        repo,
+        tree,
+        ref_name,
+        message,
+        author,
+        metadata,
+        ObjectDurability::Immediate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_tree_with_metadata_inner(
+    repo: &Repo,
+    tree: &Hash,
+    ref_name: &str,
+    message: Option<&str>,
+    author: Option<&str>,
+    metadata: &[(&str, &str)],
+    durability: ObjectDurability,
+) -> Result<Hash> {
     // get parent commit if ref exists
     let parents = match crate::refs::read_ref(repo, ref_name) {
         Ok(parent) => vec![parent],
@@ -110,12 +143,27 @@ pub fn commit_tree_with_metadata(
         commit = commit.with_metadata(*key, *value);
     }
 
-    let commit_hash = write_commit(repo, &commit)?;
+    let commit_hash = write_commit_with_durability(repo, &commit, durability)?;
+
+    if durability == ObjectDurability::Deferred {
+        let started = Instant::now();
+        sync_repository(repo)?;
+        trace("sync", started);
+    }
 
     // update ref
     write_ref(repo, ref_name, &commit_hash)?;
 
     Ok(commit_hash)
+}
+
+fn trace(phase: &str, started: Instant) {
+    if std::env::var_os("ZUB_PERF_TRACE").is_some() {
+        eprintln!(
+            "perf commit {phase} {:.6}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
 }
 
 /// processed file entry ready for tree building
@@ -130,6 +178,7 @@ fn commit_tree_parallel(
     dir: &Path,
     prefix: &str,
     hardlink_targets: &HashMap<String, String>,
+    durability: ObjectDurability,
 ) -> Result<Hash> {
     let ns = &repo.config().namespace;
 
@@ -172,7 +221,8 @@ fn commit_tree_parallel(
                 .ok_or(crate::Error::UnmappedGid(meta.gid))?;
 
             let xattrs = read_xattrs(&path)?;
-            let subtree_hash = commit_tree_parallel(repo, &path, &logical_path, hardlink_targets)?;
+            let subtree_hash =
+                commit_tree_parallel(repo, &path, &logical_path, hardlink_targets, durability)?;
 
             let kind = EntryKind::directory_with_xattrs(
                 subtree_hash,
@@ -212,24 +262,41 @@ fn commit_tree_parallel(
                     // check for sparse file
                     let sparse_regions = detect_sparse_regions(&file)?;
 
-                    let (content, sparse_map) = match sparse_regions {
+                    let (hash, sparse_map) = match sparse_regions {
                         Some(ref regions) if !regions.is_empty() => {
-                            let data = read_data_regions(&mut file, regions)?;
-                            (data, Some(regions.clone()))
+                            let mut reader = SparseReader::new(&mut file, regions);
+                            let hash = write_blob_streaming_with_durability(
+                                repo,
+                                &mut reader,
+                                inside_uid,
+                                inside_gid,
+                                meta.mode,
+                                &xattrs,
+                                durability,
+                            )?;
+                            (hash, Some(regions.clone()))
                         }
-                        Some(_) => (vec![], Some(vec![])),
+                        Some(_) => {
+                            let hash = write_blob_with_durability(
+                                repo,
+                                &[],
+                                inside_uid,
+                                inside_gid,
+                                meta.mode,
+                                &xattrs,
+                                durability,
+                            )?;
+                            (hash, Some(vec![]))
+                        }
                         None => {
-                            use std::io::Seek;
-                            file.seek(std::io::SeekFrom::Start(0)).with_path(path)?;
-                            let mut content = Vec::new();
-                            file.read_to_end(&mut content).with_path(path)?;
-                            (content, None)
+                            file.seek(SeekFrom::Start(0)).with_path(path)?;
+                            let hash = write_blob_streaming_with_durability(
+                                repo, &mut file, inside_uid, inside_gid, meta.mode, &xattrs,
+                                durability,
+                            )?;
+                            (hash, None)
                         }
                     };
-
-                    // write blob
-                    let hash =
-                        write_blob(repo, &content, inside_uid, inside_gid, meta.mode, &xattrs)?;
 
                     match sparse_map {
                         Some(map) => EntryKind::sparse(hash, meta.size, map, xattrs),
@@ -241,13 +308,14 @@ fn commit_tree_parallel(
                     let target = crate::fs::read_symlink_target(path)?;
                     let xattrs = read_xattrs(path)?;
                     let hash = compute_symlink_hash(inside_uid, inside_gid, &xattrs, &target);
-                    write_blob(
+                    write_blob_with_durability(
                         repo,
                         target.as_bytes(),
                         inside_uid,
                         inside_gid,
                         SYMLINK_MODE,
                         &xattrs,
+                        durability,
                     )?;
                     EntryKind::symlink(hash, xattrs)
                 }
@@ -323,7 +391,51 @@ fn commit_tree_parallel(
 
     // create and write tree
     let tree = Tree::new(entries)?;
-    write_tree(repo, &tree)
+    write_tree_with_durability(repo, &tree, durability)
+}
+
+struct SparseReader<'a> {
+    file: &'a mut File,
+    regions: &'a [SparseRegion],
+    index: usize,
+    offset: u64,
+}
+
+impl<'a> SparseReader<'a> {
+    fn new(file: &'a mut File, regions: &'a [SparseRegion]) -> Self {
+        Self {
+            file,
+            regions,
+            index: 0,
+            offset: 0,
+        }
+    }
+}
+
+impl Read for SparseReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let Some(region) = self.regions.get(self.index) else {
+            return Ok(0);
+        };
+        if self.offset == 0 {
+            self.file.seek(SeekFrom::Start(region.offset))?;
+        }
+        let remaining = region.length - self.offset;
+        let length = remaining.min(buffer.len() as u64) as usize;
+        let read = self.file.read(&mut buffer[..length])?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "sparse data region ended early",
+            ));
+        }
+        self.offset += read as u64;
+        if self.offset == region.length {
+            self.index += 1;
+            self.offset = 0;
+        }
+        Ok(read)
+    }
 }
 
 /// count files in a directory (for progress reporting)

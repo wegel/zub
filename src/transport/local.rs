@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::{self, File, Permissions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
@@ -37,6 +37,9 @@ fn copy_object(
     hash: &Hash,
     stats: &mut TransferStats,
 ) -> Result<()> {
+    if kind == ObjectKind::Blob {
+        return copy_blob(src, dst, hash, stats);
+    }
     let object = read_transfer_object(src, kind, hash)?;
     if !install_transfer_object(dst, &object)? {
         stats.skipped += 1;
@@ -44,6 +47,34 @@ fn copy_object(
     }
     stats.bytes_transferred += object.data.len() as u64;
     stats.copied += 1;
+    Ok(())
+}
+
+fn copy_blob(src: &Repo, dst: &Repo, hash: &Hash, stats: &mut TransferStats) -> Result<()> {
+    let source = object_path(src, ObjectKind::Blob, hash);
+    let stored = fs::metadata(&source).with_path(&source)?;
+    if !stored.is_file() {
+        return Err(Error::CorruptObject(*hash));
+    }
+    let destination = object_path(dst, ObjectKind::Blob, hash);
+    if destination.exists() {
+        stats.skipped += 1;
+        return Ok(());
+    }
+    let parent = object_parent(&destination)?;
+    fs::create_dir_all(parent).with_path(parent)?;
+    let temporary = dst.tmp_path().join(uuid::Uuid::new_v4().to_string());
+    let metadata = logical_blob_metadata(src, &stored)?;
+    let result = copy_blob_temporary(dst, &source, &temporary, &destination, metadata);
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    if result? {
+        stats.bytes_transferred += stored.len();
+        stats.copied += 1;
+    } else {
+        stats.skipped += 1;
+    }
     Ok(())
 }
 
@@ -59,14 +90,7 @@ pub(crate) fn read_transfer_object(
         if !stored.is_file() {
             return Err(Error::CorruptObject(*hash));
         }
-        let namespace = &repo.config().namespace;
-        Some(BlobMetadata {
-            uid: outside_to_inside(stored.uid(), &namespace.uid_map)
-                .ok_or(Error::UnmappedUid(stored.uid()))?,
-            gid: outside_to_inside(stored.gid(), &namespace.gid_map)
-                .ok_or(Error::UnmappedGid(stored.gid()))?,
-            mode: stored.mode(),
-        })
+        Some(logical_blob_metadata(repo, &stored)?)
     } else {
         None
     };
@@ -90,10 +114,7 @@ pub(crate) fn install_transfer_object(repo: &Repo, object: &TransferObject) -> R
     if destination.exists() {
         return Ok(false);
     }
-    let parent = destination.parent().ok_or_else(|| Error::Io {
-        path: destination.clone(),
-        source: std::io::Error::other("object path has no parent"),
-    })?;
+    let parent = object_parent(&destination)?;
     fs::create_dir_all(parent).with_path(parent)?;
 
     let temporary = repo.tmp_path().join(uuid::Uuid::new_v4().to_string());
@@ -118,28 +139,51 @@ fn install_temporary(
         let metadata = object.metadata.ok_or_else(|| Error::Transport {
             message: format!("blob {} has no logical metadata", object.hash),
         })?;
-        let namespace = &repo.config().namespace;
-        let uid = inside_to_outside(metadata.uid, &namespace.uid_map)
-            .ok_or(Error::UnmappedUid(metadata.uid))?;
-        let gid = inside_to_outside(metadata.gid, &namespace.gid_map)
-            .ok_or(Error::UnmappedGid(metadata.gid))?;
-        fs::set_permissions(temporary, Permissions::from_mode(metadata.mode & 0o7777))
-            .with_path(temporary)?;
-        let current_uid = nix::unistd::getuid().as_raw();
-        let current_gid = nix::unistd::getgid().as_raw();
-        if uid != current_uid || gid != current_gid {
-            nix::unistd::chown(
-                temporary,
-                Some(nix::unistd::Uid::from_raw(uid)),
-                Some(nix::unistd::Gid::from_raw(gid)),
-            )
-            .map_err(|error| Error::Io {
-                path: temporary.to_path_buf(),
-                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, error),
-            })?;
-        }
+        apply_blob_metadata(repo, temporary, metadata)?;
     }
 
+    install_completed_file(temporary, destination)
+}
+
+fn copy_blob_temporary(
+    repo: &Repo,
+    source: &Path,
+    temporary: &Path,
+    destination: &Path,
+    metadata: BlobMetadata,
+) -> Result<bool> {
+    let mut input = File::open(source).with_path(source)?;
+    let mut output = File::create(temporary).with_path(temporary)?;
+    io::copy(&mut input, &mut output).with_path(source)?;
+    output.sync_all().with_path(temporary)?;
+    apply_blob_metadata(repo, temporary, metadata)?;
+    install_completed_file(temporary, destination)
+}
+
+fn apply_blob_metadata(repo: &Repo, path: &Path, metadata: BlobMetadata) -> Result<()> {
+    let namespace = &repo.config().namespace;
+    let uid = inside_to_outside(metadata.uid, &namespace.uid_map)
+        .ok_or(Error::UnmappedUid(metadata.uid))?;
+    let gid = inside_to_outside(metadata.gid, &namespace.gid_map)
+        .ok_or(Error::UnmappedGid(metadata.gid))?;
+    fs::set_permissions(path, Permissions::from_mode(metadata.mode & 0o7777)).with_path(path)?;
+    let current_uid = nix::unistd::getuid().as_raw();
+    let current_gid = nix::unistd::getgid().as_raw();
+    if uid != current_uid || gid != current_gid {
+        nix::unistd::chown(
+            path,
+            Some(nix::unistd::Uid::from_raw(uid)),
+            Some(nix::unistd::Gid::from_raw(gid)),
+        )
+        .map_err(|error| Error::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, error),
+        })?;
+    }
+    Ok(())
+}
+
+fn install_completed_file(temporary: &Path, destination: &Path) -> Result<bool> {
     let installed = match fs::hard_link(temporary, destination) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
@@ -157,6 +201,24 @@ fn install_temporary(
         .sync_all()
         .with_path(parent)?;
     Ok(installed)
+}
+
+fn logical_blob_metadata(repo: &Repo, stored: &fs::Metadata) -> Result<BlobMetadata> {
+    let namespace = &repo.config().namespace;
+    Ok(BlobMetadata {
+        uid: outside_to_inside(stored.uid(), &namespace.uid_map)
+            .ok_or(Error::UnmappedUid(stored.uid()))?,
+        gid: outside_to_inside(stored.gid(), &namespace.gid_map)
+            .ok_or(Error::UnmappedGid(stored.gid()))?,
+        mode: stored.mode(),
+    })
+}
+
+fn object_parent(path: &Path) -> Result<&Path> {
+    path.parent().ok_or_else(|| Error::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::other("object path has no parent"),
+    })
 }
 
 pub(crate) fn remove_objects(repo: &Repo, objects: &ObjectSet) -> Result<()> {

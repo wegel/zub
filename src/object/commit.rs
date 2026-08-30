@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::hash::Hash;
+use crate::object::ObjectDurability;
 use crate::repo::Repo;
 use crate::types::Commit;
 
@@ -12,6 +13,14 @@ use crate::types::Commit;
 /// commits are serialized as CBOR, then zstd compressed.
 /// the hash is computed over the compressed bytes.
 pub fn write_commit(repo: &Repo, commit: &Commit) -> Result<Hash> {
+    write_commit_with_durability(repo, commit, ObjectDurability::Immediate)
+}
+
+pub(crate) fn write_commit_with_durability(
+    repo: &Repo,
+    commit: &Commit,
+    durability: ObjectDurability,
+) -> Result<Hash> {
     // serialize to cbor
     let mut cbor_bytes = Vec::new();
     ciborium::into_writer(commit, &mut cbor_bytes)?;
@@ -42,15 +51,14 @@ pub fn write_commit(repo: &Repo, commit: &Commit) -> Result<Hash> {
     {
         let mut tmp_file = File::create(&tmp_path).with_path(&tmp_path)?;
         tmp_file.write_all(&compressed).with_path(&tmp_path)?;
-        tmp_file.sync_all().with_path(&tmp_path)?;
+        durability.sync_file(&tmp_file, &tmp_path)?;
     }
 
     // rename to final location
     fs::rename(&tmp_path, &commit_path).with_path(&commit_path)?;
 
     // fsync parent directory
-    let dir_file = File::open(&commit_dir).with_path(&commit_dir)?;
-    dir_file.sync_all().with_path(&commit_dir)?;
+    durability.sync_directory(&commit_dir)?;
 
     Ok(hash)
 }
