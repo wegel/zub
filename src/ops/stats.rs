@@ -1,9 +1,7 @@
 //! repository statistics
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
-
-use walkdir::WalkDir;
+use std::time::Instant;
 
 use crate::error::Result;
 use crate::hash::Hash;
@@ -11,6 +9,12 @@ use crate::object::{read_commit, read_tree};
 use crate::refs::{list_refs, list_refs_matching, read_ref};
 use crate::repo::Repo;
 use crate::types::EntryKind;
+
+mod du_cache;
+mod scan;
+
+use du_cache::DuCache;
+use scan::{inventory_hash, scan_objects};
 
 /// repository statistics
 #[derive(Debug, Default)]
@@ -31,9 +35,15 @@ pub struct RepoStats {
 /// collect repository statistics
 pub fn stats(repo: &Repo) -> Result<RepoStats> {
     // count and measure objects on disk
-    let (blobs, blob_bytes) = count_objects(&repo.blobs_path());
-    let (trees, tree_bytes) = count_objects(&repo.trees_path());
-    let (commits, commit_bytes) = count_objects(&repo.commits_path());
+    let started = Instant::now();
+    let blob_objects = scan_objects(&repo.blobs_path(), true);
+    trace("count blobs", started);
+    let started = Instant::now();
+    let tree_objects = scan_objects(&repo.trees_path(), false);
+    trace("count trees", started);
+    let started = Instant::now();
+    let commit_objects = scan_objects(&repo.commits_path(), false);
+    trace("count commits", started);
 
     // mark reachable objects
     let mut reachable_blobs = HashSet::new();
@@ -41,6 +51,7 @@ pub fn stats(repo: &Repo) -> Result<RepoStats> {
     let mut reachable_commits = HashSet::new();
 
     let refs = list_refs(repo)?;
+    let started = Instant::now();
     for ref_name in &refs {
         let commit_hash = crate::refs::read_ref(repo, ref_name)?;
         mark_commit(
@@ -51,83 +62,35 @@ pub fn stats(repo: &Repo) -> Result<RepoStats> {
             &mut reachable_commits,
         )?;
     }
+    trace("mark reachable", started);
+    let started = Instant::now();
+    let unreachable_blobs_bytes = blob_objects
+        .hashed
+        .iter()
+        .filter(|object| !reachable_blobs.contains(&object.hash))
+        .map(|object| object.bytes)
+        .sum();
+    trace("count unreachable blobs", started);
 
     Ok(RepoStats {
-        total_blobs: blobs,
-        total_trees: trees,
-        total_commits: commits,
+        total_blobs: blob_objects.count,
+        total_trees: tree_objects.count,
+        total_commits: commit_objects.count,
         total_refs: refs.len(),
-        total_blobs_bytes: blob_bytes,
-        total_trees_bytes: tree_bytes,
-        total_commits_bytes: commit_bytes,
+        total_blobs_bytes: blob_objects.bytes,
+        total_trees_bytes: tree_objects.bytes,
+        total_commits_bytes: commit_objects.bytes,
         reachable_blobs: reachable_blobs.len(),
         reachable_trees: reachable_trees.len(),
         reachable_commits: reachable_commits.len(),
-        unreachable_blobs_bytes: calculate_unreachable_bytes(&repo.blobs_path(), &reachable_blobs),
+        unreachable_blobs_bytes,
     })
 }
 
-fn count_objects(dir: &std::path::Path) -> (usize, u64) {
-    if !dir.exists() {
-        return (0, 0);
+fn trace(label: &str, started: Instant) {
+    if std::env::var_os("ZUB_PERF_TRACE").is_some() {
+        eprintln!("zub perf: {label}: {:.3}s", started.elapsed().as_secs_f64());
     }
-
-    let mut count = 0;
-    let mut bytes = 0;
-
-    for entry in WalkDir::new(dir)
-        .min_depth(2)
-        .max_depth(2)
-        .into_iter()
-        .flatten()
-    {
-        if entry.file_type().is_file() {
-            count += 1;
-            if let Ok(meta) = fs::metadata(entry.path()) {
-                bytes += meta.len();
-            }
-        }
-    }
-
-    (count, bytes)
-}
-
-fn calculate_unreachable_bytes(dir: &std::path::Path, reachable: &HashSet<Hash>) -> u64 {
-    if !dir.exists() {
-        return 0;
-    }
-
-    let mut bytes = 0;
-
-    for entry in WalkDir::new(dir)
-        .min_depth(2)
-        .max_depth(2)
-        .into_iter()
-        .flatten()
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let parent_name = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        let hex = format!("{}{}", parent_name, file_name);
-        if let Ok(hash) = Hash::from_hex(&hex) {
-            if !reachable.contains(&hash) {
-                if let Ok(meta) = fs::metadata(path) {
-                    bytes += meta.len();
-                }
-            }
-        }
-    }
-
-    bytes
 }
 
 /// recursively mark a commit and all its reachable objects
@@ -201,29 +164,36 @@ pub struct RefSize {
 /// calculate size per ref (disk usage)
 /// optionally filter refs by glob pattern
 pub fn du(repo: &Repo, pattern: Option<&str>) -> Result<Vec<RefSize>> {
-    // first build a map of blob hash -> size on disk
-    let blob_sizes = build_blob_size_map(repo)?;
+    let started = Instant::now();
+    let mut blob_objects = scan_objects(&repo.blobs_path(), true);
+    let mut tree_objects = scan_objects(&repo.trees_path(), true);
+    let blob_inventory = inventory_hash(&mut blob_objects.hashed, false);
+    let tree_inventory = inventory_hash(&mut tree_objects.hashed, true);
+    let blob_sizes = blob_objects
+        .hashed
+        .into_iter()
+        .map(|object| (object.hash, object.bytes))
+        .collect::<HashMap<_, _>>();
+    trace("index object inventory", started);
 
     let mut results = Vec::new();
+    let mut cache = DuCache::open(repo, blob_inventory, tree_inventory);
 
     let refs = match pattern {
         Some(p) => list_refs_matching(repo, p)?,
         None => list_refs(repo)?,
     };
 
+    let started = Instant::now();
     for ref_name in refs {
         let commit_hash = read_ref(repo, &ref_name)?;
-        let commit = read_commit(repo, &commit_hash)?;
-
-        // collect all blobs reachable from this ref's tree
-        let mut blobs = HashSet::new();
-        collect_tree_blobs(repo, &commit.tree, &mut blobs)?;
-
-        // sum up sizes
-        let bytes: u64 = blobs.iter().filter_map(|h| blob_sizes.get(h)).sum();
+        let tree = cache.commit_tree(repo, commit_hash)?;
+        let bytes = cache.tree_bytes(repo, tree, &blob_sizes)?;
 
         results.push(RefSize { ref_name, bytes });
     }
+    trace("measure ref trees", started);
+    cache.save(repo, blob_inventory, tree_inventory);
 
     // sort by size descending
     results.sort_by(|a, b| b.bytes.cmp(&a.bytes));
@@ -232,40 +202,11 @@ pub fn du(repo: &Repo, pattern: Option<&str>) -> Result<Vec<RefSize>> {
 }
 
 fn build_blob_size_map(repo: &Repo) -> Result<HashMap<Hash, u64>> {
-    let mut sizes = HashMap::new();
-    let blobs_path = repo.blobs_path();
-
-    if !blobs_path.exists() {
-        return Ok(sizes);
-    }
-
-    for entry in WalkDir::new(&blobs_path)
-        .min_depth(2)
-        .max_depth(2)
+    Ok(scan_objects(&repo.blobs_path(), true)
+        .hashed
         .into_iter()
-        .flatten()
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let parent_name = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        let hex = format!("{}{}", parent_name, file_name);
-        if let Ok(hash) = Hash::from_hex(&hex) {
-            if let Ok(meta) = fs::metadata(path) {
-                sizes.insert(hash, meta.len());
-            }
-        }
-    }
-
-    Ok(sizes)
+        .map(|object| (object.hash, object.bytes))
+        .collect())
 }
 
 fn collect_tree_blobs(repo: &Repo, tree_hash: &Hash, blobs: &mut HashSet<Hash>) -> Result<()> {
@@ -369,3 +310,7 @@ fn collect_tree_sizes(
 
     Ok(total)
 }
+
+#[cfg(test)]
+#[path = "stats_tests.rs"]
+mod tests;
