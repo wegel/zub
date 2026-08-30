@@ -10,8 +10,11 @@ pub(super) fn check_stored_objects(
     report: &mut FsckReport,
 ) -> Result<()> {
     check_stored_blobs(repo, &reachable.blobs, report)?;
+    trace_memory("stored blobs", reachable);
     check_stored_trees(repo, &reachable.trees, report)?;
+    trace_memory("stored trees", reachable);
     check_stored_commits(repo, &reachable.commits, report)?;
+    trace_memory("stored commits", reachable);
     check_stored_artifacts(repo, &reachable.artifacts, report)
 }
 
@@ -86,7 +89,10 @@ fn check_stored_artifacts(
 ) -> Result<()> {
     for hash in list_objects(&repo.artifacts_path())? {
         report.objects_checked += 1;
-        if let Err(error) = read_artifact(repo, &hash) {
+        if reachable.contains(&hash) {
+            continue;
+        }
+        if let Err(error) = verify_artifact(repo, &hash) {
             report.corrupt_objects.push(CorruptObject {
                 hash,
                 object_type: ObjectType::Artifact,

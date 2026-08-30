@@ -30,7 +30,20 @@ fn test_write_and_read_artifact() {
 
     assert_eq!(hash, expected_hash);
     assert!(artifact_exists(&repo, &hash));
+    verify_artifact(&repo, &hash).unwrap();
     assert_eq!(read_artifact(&repo, &hash).unwrap(), artifact);
+}
+
+#[test]
+fn artifact_verifier_rejects_hash_named_incomplete_cbor() {
+    let (_dir, repo) = test_repo();
+    let bytes = b"\xa1\x64kind\x69interface";
+    let hash = Hash::from_bytes(*blake3::hash(bytes).as_bytes());
+    let path = artifact_path(&repo, &hash);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+
+    assert!(verify_artifact(&repo, &hash).is_err());
 }
 
 #[test]

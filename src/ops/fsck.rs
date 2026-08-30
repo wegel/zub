@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::hash::Hash;
-use crate::object::{read_artifact, read_commit, read_tree};
+use crate::object::{read_commit, read_tree, verify_artifact};
 use crate::refs::{list_artifact_refs, list_refs, read_artifact_ref};
 use crate::repo::Repo;
 use crate::types::EntryKind;
@@ -66,12 +66,14 @@ pub fn fsck(repo: &Repo) -> Result<FsckReport> {
     let mut report = FsckReport::default();
     let mut reachable = Reachable::default();
     check_reachable(repo, &mut reachable, &mut report)?;
+    trace_memory("reachable objects", &reachable);
     store::check_stored_objects(repo, &reachable, &mut report)?;
+    trace_memory("stored objects", &reachable);
     Ok(report)
 }
 
 #[derive(Default)]
-struct Reachable {
+pub(super) struct Reachable {
     blobs: HashSet<Hash>,
     trees: HashSet<Hash>,
     commits: HashSet<Hash>,
@@ -91,17 +93,41 @@ fn check_reachable(repo: &Repo, reachable: &mut Reachable, report: &mut FsckRepo
             report,
         )?;
     }
+    trace_memory("refs", reachable);
     for reference in list_artifact_refs(repo)? {
         let hash = read_artifact_ref(repo, &reference)?;
         reachable.artifacts.insert(hash);
         check_artifact(&reference, hash, repo, report);
     }
+    trace_memory("artifact refs", reachable);
     Ok(())
 }
 
+pub(super) fn trace_memory(label: &str, reachable: &Reachable) {
+    if std::env::var_os("ZUB_PERF_TRACE").is_none() {
+        return;
+    }
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let rss = status
+        .lines()
+        .find(|line| line.starts_with("VmRSS:"))
+        .unwrap_or("VmRSS: unknown");
+    let peak = status
+        .lines()
+        .find(|line| line.starts_with("VmHWM:"))
+        .unwrap_or("VmHWM: unknown");
+    eprintln!(
+        "zub perf: fsck {label}: {rss}; {peak}; reachable blobs={} trees={} commits={} artifacts={}",
+        reachable.blobs.len(),
+        reachable.trees.len(),
+        reachable.commits.len(),
+        reachable.artifacts.len()
+    );
+}
+
 fn check_artifact(reference: &str, hash: Hash, repo: &Repo, report: &mut FsckReport) {
-    match read_artifact(repo, &hash) {
-        Ok(_) => {}
+    match verify_artifact(repo, &hash) {
+        Ok(()) => {}
         Err(crate::Error::ObjectNotFound(_)) => report.missing_objects.push(MissingObject {
             hash,
             object_type: ObjectType::Artifact,

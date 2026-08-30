@@ -9,6 +9,7 @@ use std::fs::File;
 use crate::error::{Error, IoResultExt, Result};
 use crate::repo::Repo;
 
+pub(crate) use artifact::verify_artifact;
 pub use artifact::{
     artifact_exists, artifact_path, read_artifact, read_named_artifact, write_artifact,
     write_named_artifact,
