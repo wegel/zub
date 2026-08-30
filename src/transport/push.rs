@@ -9,8 +9,7 @@ use crate::object::{read_commit, read_tree, verify_commit};
 use crate::refs::{read_ref, write_ref};
 use crate::repo::Repo;
 use crate::transport::local::{
-    copy_objects, list_all_objects, read_transfer_object, remove_objects, ObjectKind, ObjectSet,
-    TransferStats,
+    copy_objects, list_all_objects, remove_objects, ObjectKind, ObjectSet, TransferStats,
 };
 use crate::transport::ssh::SshConnection;
 use crate::types::EntryKind;
@@ -141,23 +140,17 @@ pub fn push_ssh(
     let mut stats = TransferStats::default();
 
     for hash in &needed.blobs {
-        let object = read_transfer_object(local, ObjectKind::Blob, hash)?;
-        conn.send_object(&object)?;
-        stats.bytes_transferred += object.data.len() as u64;
+        stats.bytes_transferred += conn.send_object(local, ObjectKind::Blob, hash)?;
         stats.copied += 1;
     }
 
     for hash in &needed.trees {
-        let object = read_transfer_object(local, ObjectKind::Tree, hash)?;
-        conn.send_object(&object)?;
-        stats.bytes_transferred += object.data.len() as u64;
+        stats.bytes_transferred += conn.send_object(local, ObjectKind::Tree, hash)?;
         stats.copied += 1;
     }
 
     for hash in &needed.commits {
-        let object = read_transfer_object(local, ObjectKind::Commit, hash)?;
-        conn.send_object(&object)?;
-        stats.bytes_transferred += object.data.len() as u64;
+        stats.bytes_transferred += conn.send_object(local, ObjectKind::Commit, hash)?;
         stats.copied += 1;
     }
 

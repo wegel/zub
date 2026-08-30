@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::{self, File, Permissions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
@@ -37,40 +37,13 @@ fn copy_object(
     hash: &Hash,
     stats: &mut TransferStats,
 ) -> Result<()> {
-    if kind == ObjectKind::Blob {
-        return copy_blob(src, dst, hash, stats);
-    }
-    let object = read_transfer_object(src, kind, hash)?;
-    if !install_transfer_object(dst, &object)? {
+    if object_path(dst, kind, hash).exists() {
         stats.skipped += 1;
         return Ok(());
     }
-    stats.bytes_transferred += object.data.len() as u64;
-    stats.copied += 1;
-    Ok(())
-}
-
-fn copy_blob(src: &Repo, dst: &Repo, hash: &Hash, stats: &mut TransferStats) -> Result<()> {
-    let source = object_path(src, ObjectKind::Blob, hash);
-    let stored = fs::metadata(&source).with_path(&source)?;
-    if !stored.is_file() {
-        return Err(Error::CorruptObject(*hash));
-    }
-    let destination = object_path(dst, ObjectKind::Blob, hash);
-    if destination.exists() {
-        stats.skipped += 1;
-        return Ok(());
-    }
-    let parent = object_parent(&destination)?;
-    fs::create_dir_all(parent).with_path(parent)?;
-    let temporary = dst.tmp_path().join(uuid::Uuid::new_v4().to_string());
-    let metadata = logical_blob_metadata(src, &stored)?;
-    let result = copy_blob_temporary(dst, &source, &temporary, &destination, metadata);
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    if result? {
-        stats.bytes_transferred += stored.len();
+    let (header, mut input) = open_transfer_object(src, kind, hash)?;
+    if install_transfer_reader(dst, &header, &mut input)? {
+        stats.bytes_transferred += header.size;
         stats.copied += 1;
     } else {
         stats.skipped += 1;
@@ -78,47 +51,82 @@ fn copy_blob(src: &Repo, dst: &Repo, hash: &Hash, stats: &mut TransferStats) -> 
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn read_transfer_object(
     repo: &Repo,
     kind: ObjectKind,
     hash: &Hash,
 ) -> Result<TransferObject> {
+    let (header, mut input) = open_transfer_object(repo, kind, hash)?;
+    let capacity = usize::try_from(header.size).map_err(|_| Error::Transport {
+        message: format!("object {} is too large for this process", header.hash),
+    })?;
+    let mut data = Vec::with_capacity(capacity);
+    input
+        .read_to_end(&mut data)
+        .with_path(object_path(repo, kind, hash))?;
+    Ok(TransferObject {
+        kind: header.kind,
+        hash: header.hash,
+        data,
+        metadata: header.metadata,
+    })
+}
+
+pub(crate) fn open_transfer_object(
+    repo: &Repo,
+    kind: ObjectKind,
+    hash: &Hash,
+) -> Result<(TransferObjectHeader, File)> {
     let path = object_path(repo, kind, hash);
-    let data = fs::read(&path).with_path(&path)?;
+    let input = File::open(&path).with_path(&path)?;
+    let stored = input.metadata().with_path(&path)?;
+    if !stored.is_file() {
+        return Err(Error::CorruptObject(*hash));
+    }
     let metadata = if kind == ObjectKind::Blob {
-        let stored = fs::metadata(&path).with_path(&path)?;
-        if !stored.is_file() {
-            return Err(Error::CorruptObject(*hash));
-        }
         Some(logical_blob_metadata(repo, &stored)?)
     } else {
         None
     };
-    Ok(TransferObject {
-        kind,
-        hash: *hash,
-        data,
-        metadata,
-    })
+    Ok((
+        TransferObjectHeader {
+            kind,
+            hash: *hash,
+            size: stored.len(),
+            metadata,
+        },
+        input,
+    ))
 }
 
+#[cfg(test)]
 pub(crate) fn install_transfer_object(repo: &Repo, object: &TransferObject) -> Result<bool> {
-    if object.kind != ObjectKind::Blob {
-        let actual = Hash::from_bytes(*blake3::hash(&object.data).as_bytes());
-        if actual != object.hash {
-            return Err(Error::CorruptObject(object.hash));
-        }
-    }
+    let header = TransferObjectHeader {
+        kind: object.kind,
+        hash: object.hash,
+        size: object.data.len() as u64,
+        metadata: object.metadata,
+    };
+    install_transfer_reader(repo, &header, &mut object.data.as_slice())
+}
 
-    let destination = object_path(repo, object.kind, &object.hash);
+pub(crate) fn install_transfer_reader(
+    repo: &Repo,
+    header: &TransferObjectHeader,
+    reader: &mut impl Read,
+) -> Result<bool> {
+    let destination = object_path(repo, header.kind, &header.hash);
     if destination.exists() {
+        copy_transfer_bytes(reader, &mut io::sink(), header.size, None)?;
         return Ok(false);
     }
+
     let parent = object_parent(&destination)?;
     fs::create_dir_all(parent).with_path(parent)?;
 
     let temporary = repo.tmp_path().join(uuid::Uuid::new_v4().to_string());
-    let result = install_temporary(repo, object, &temporary, &destination);
+    let result = install_temporary(repo, header, reader, &temporary, &destination);
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
@@ -127,37 +135,65 @@ pub(crate) fn install_transfer_object(repo: &Repo, object: &TransferObject) -> R
 
 fn install_temporary(
     repo: &Repo,
-    object: &TransferObject,
+    header: &TransferObjectHeader,
+    reader: &mut impl Read,
     temporary: &Path,
     destination: &Path,
 ) -> Result<bool> {
     let mut file = File::create(temporary).with_path(temporary)?;
-    file.write_all(&object.data).with_path(temporary)?;
+    let actual = copy_transfer_bytes(reader, &mut file, header.size, Some(temporary))?;
     file.sync_all().with_path(temporary)?;
 
-    if object.kind == ObjectKind::Blob {
-        let metadata = object.metadata.ok_or_else(|| Error::Transport {
-            message: format!("blob {} has no logical metadata", object.hash),
+    if header.kind == ObjectKind::Blob {
+        let metadata = header.metadata.ok_or_else(|| Error::Transport {
+            message: format!("blob {} has no logical metadata", header.hash),
         })?;
         apply_blob_metadata(repo, temporary, metadata)?;
+    } else if actual != header.hash {
+        return Err(Error::CorruptObject(header.hash));
     }
 
     install_completed_file(temporary, destination)
 }
 
-fn copy_blob_temporary(
-    repo: &Repo,
-    source: &Path,
-    temporary: &Path,
-    destination: &Path,
-    metadata: BlobMetadata,
-) -> Result<bool> {
-    let mut input = File::open(source).with_path(source)?;
-    let mut output = File::create(temporary).with_path(temporary)?;
-    io::copy(&mut input, &mut output).with_path(source)?;
-    output.sync_all().with_path(temporary)?;
-    apply_blob_metadata(repo, temporary, metadata)?;
-    install_completed_file(temporary, destination)
+fn copy_transfer_bytes(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    size: u64,
+    output_path: Option<&Path>,
+) -> Result<Hash> {
+    const BUFFER_BYTES: usize = 64 * 1024;
+
+    let mut remaining = size;
+    let mut buffer = [0_u8; BUFFER_BYTES];
+    let mut hasher = blake3::Hasher::new();
+    while remaining != 0 {
+        let wanted = usize::try_from(remaining.min(BUFFER_BYTES as u64)).unwrap();
+        let read = reader
+            .read(&mut buffer[..wanted])
+            .map_err(|source| Error::Transport {
+                message: format!("failed to read object data: {source}"),
+            })?;
+        if read == 0 {
+            return Err(Error::Transport {
+                message: format!(
+                    "object data ended after {} of {size} bytes",
+                    size - remaining
+                ),
+            });
+        }
+        writer
+            .write_all(&buffer[..read])
+            .map_err(|source| Error::Io {
+                path: output_path
+                    .unwrap_or_else(|| Path::new("transfer stream"))
+                    .to_path_buf(),
+                source,
+            })?;
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(Hash::from_bytes(*hasher.finalize().as_bytes()))
 }
 
 fn apply_blob_metadata(repo: &Repo, path: &Path, metadata: BlobMetadata) -> Result<()> {
@@ -289,11 +325,20 @@ pub(crate) struct BlobMetadata {
     pub(crate) mode: u32,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransferObject {
     pub(crate) kind: ObjectKind,
     pub(crate) hash: Hash,
     pub(crate) data: Vec<u8>,
+    pub(crate) metadata: Option<BlobMetadata>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TransferObjectHeader {
+    pub(crate) kind: ObjectKind,
+    pub(crate) hash: Hash,
+    pub(crate) size: u64,
     pub(crate) metadata: Option<BlobMetadata>,
 }
 
@@ -384,6 +429,9 @@ pub struct TransferStats {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
     use crate::ops::commit;
     use tempfile::tempdir;
@@ -452,5 +500,57 @@ mod tests {
         assert_eq!(copied.mode() & 0o7777, 0o755);
         assert_eq!(copied.uid(), current_uid);
         assert_eq!(copied.gid(), current_gid);
+    }
+
+    #[test]
+    fn transfer_reader_bounds_memory_for_an_object_larger_than_the_process_budget() {
+        const SIZE: u64 = 129 * 1024 * 1024;
+
+        let dir = tempdir().unwrap();
+        let repo = Repo::init(&dir.path().join("repo")).unwrap();
+        let namespace = &repo.config().namespace;
+        let uid = outside_to_inside(nix::unistd::getuid().as_raw(), &namespace.uid_map).unwrap();
+        let gid = outside_to_inside(nix::unistd::getgid().as_raw(), &namespace.gid_map).unwrap();
+        let largest_request = Rc::new(Cell::new(0));
+        let mut reader = GeneratedReader {
+            remaining: SIZE,
+            largest_request: Rc::clone(&largest_request),
+        };
+        let hash = Hash::from_bytes([0x5a; 32]);
+        let header = TransferObjectHeader {
+            kind: ObjectKind::Blob,
+            hash,
+            size: SIZE,
+            metadata: Some(BlobMetadata {
+                uid,
+                gid,
+                mode: 0o100644,
+            }),
+        };
+
+        assert!(install_transfer_reader(&repo, &header, &mut reader).unwrap());
+        assert_eq!(
+            fs::metadata(object_path(&repo, ObjectKind::Blob, &hash))
+                .unwrap()
+                .len(),
+            SIZE
+        );
+        assert!(largest_request.get() <= 64 * 1024);
+    }
+
+    struct GeneratedReader {
+        remaining: u64,
+        largest_request: Rc<Cell<usize>>,
+    }
+
+    impl Read for GeneratedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.largest_request
+                .set(self.largest_request.get().max(buffer.len()));
+            let read = usize::try_from(self.remaining.min(buffer.len() as u64)).unwrap();
+            buffer[..read].fill(0x6d);
+            self.remaining -= read as u64;
+            Ok(read)
+        }
     }
 }

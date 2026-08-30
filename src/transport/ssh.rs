@@ -8,9 +8,20 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::error::Result;
 use crate::hash::Hash;
-use crate::transport::local::{BlobMetadata, ObjectKind, ObjectSet, TransferObject};
+use crate::repo::Repo;
+use crate::transport::local::{
+    install_transfer_reader, open_transfer_object, BlobMetadata, ObjectKind, ObjectSet,
+    TransferObjectHeader,
+};
 
-pub(crate) const PROTOCOL_VERSION: u32 = 2;
+pub(crate) const PROTOCOL_VERSION: u32 = 3;
+
+pub(crate) struct ReceivedObject {
+    pub(crate) kind: ObjectKind,
+    pub(crate) hash: Hash,
+    pub(crate) size: u64,
+    pub(crate) installed: bool,
+}
 
 /// SSH connection to a remote repository
 pub struct SshConnection {
@@ -132,30 +143,44 @@ impl SshConnection {
     }
 
     /// send an object to the remote
-    pub(crate) fn send_object(&mut self, object: &TransferObject) -> Result<()> {
-        let metadata = object.metadata.unwrap_or(BlobMetadata {
+    pub(crate) fn send_object(
+        &mut self,
+        repo: &Repo,
+        kind: ObjectKind,
+        hash: &Hash,
+    ) -> Result<u64> {
+        let (header, input) = open_transfer_object(repo, kind, hash)?;
+        let metadata = header.metadata.unwrap_or(BlobMetadata {
             uid: 0,
             gid: 0,
             mode: 0,
         });
-        let header = format!(
+        let wire_header = format!(
             "object {} {} {} {} {} {}\n",
-            object.kind,
-            object.hash,
-            object.data.len(),
-            metadata.uid,
-            metadata.gid,
-            metadata.mode
+            header.kind, header.hash, header.size, metadata.uid, metadata.gid, metadata.mode
         );
-        self.send_raw(&header)?;
+        self.send_raw(&wire_header)?;
 
-        self.writer
-            .write_all(&object.data)
-            .map_err(|e| crate::Error::Transport {
-                message: format!("failed to write object: {}", e),
+        let copied =
+            std::io::copy(&mut input.take(header.size), &mut self.writer).map_err(|e| {
+                crate::Error::Transport {
+                    message: format!("failed to write object: {e}"),
+                }
             })?;
+        if copied != header.size {
+            return Err(crate::Error::Transport {
+                message: format!(
+                    "object {} ended after {copied} of {} bytes",
+                    header.hash, header.size
+                ),
+            });
+        }
+        self.writer.flush().map_err(|e| crate::Error::Transport {
+            message: format!("failed to flush object: {e}"),
+        })?;
 
-        self.expect_ok()
+        self.expect_ok()?;
+        Ok(header.size)
     }
 
     /// update a ref on the remote
@@ -201,7 +226,7 @@ impl SshConnection {
     }
 
     /// receive an object from the remote
-    pub(crate) fn receive_object(&mut self) -> Result<Option<TransferObject>> {
+    pub(crate) fn receive_object(&mut self, repo: &Repo) -> Result<Option<ReceivedObject>> {
         let mut line = String::new();
         self.reader
             .read_line(&mut line)
@@ -224,25 +249,26 @@ impl SshConnection {
 
         let kind = ObjectKind::parse(parts[1])?;
         let hash = Hash::from_hex(parts[2])?;
-        let size: usize = parts[3].parse().map_err(|_| crate::Error::Transport {
+        let size: u64 = parts[3].parse().map_err(|_| crate::Error::Transport {
             message: format!("invalid size: {}", parts[3]),
         })?;
         let uid = parse_metadata(parts[4], "uid")?;
         let gid = parse_metadata(parts[5], "gid")?;
         let mode = parse_metadata(parts[6], "mode")?;
 
-        let mut data = vec![0u8; size];
-        self.reader
-            .read_exact(&mut data)
-            .map_err(|e| crate::Error::Transport {
-                message: format!("failed to read object data: {}", e),
-            })?;
-
-        Ok(Some(TransferObject {
+        let header = TransferObjectHeader {
             kind,
             hash,
-            data,
+            size,
             metadata: (kind == ObjectKind::Blob).then_some(BlobMetadata { uid, gid, mode }),
+        };
+        let installed = install_transfer_reader(repo, &header, &mut self.reader)?;
+
+        Ok(Some(ReceivedObject {
+            kind,
+            hash,
+            size,
+            installed,
         }))
     }
 

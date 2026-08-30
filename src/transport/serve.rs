@@ -3,7 +3,7 @@
 //! implements the protocol that responds to pull/push requests from remote clients
 
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 use crate::hash::Hash;
 use crate::object::{read_commit, read_tree, verify_commit};
@@ -11,8 +11,8 @@ use crate::refs::{list_refs, read_ref, write_ref};
 use crate::repo::Repo;
 use crate::repo::RepoLock;
 use crate::transport::local::{
-    install_transfer_object, read_transfer_object, remove_objects, ObjectKind, ObjectSet,
-    TransferObject,
+    install_transfer_reader, open_transfer_object, remove_objects, ObjectKind, ObjectSet,
+    TransferObjectHeader,
 };
 use crate::transport::ssh::PROTOCOL_VERSION;
 use crate::types::EntryKind;
@@ -71,11 +71,9 @@ fn serve_remote_io(repo: &Repo, mut reader: impl BufRead, mut stdout: impl Write
 
             "object" => {
                 received.lock(repo)?;
-                match receive_object(args, &mut reader).and_then(|object| {
-                    install_transfer_object(repo, &object).map(|new| (object, new))
-                }) {
-                    Ok((object, true)) => {
-                        received.objects.push(object.kind, object.hash);
+                match receive_object(repo, args, &mut reader) {
+                    Ok((header, true)) => {
+                        received.objects.push(header.kind, header.hash);
                         write_ok(&mut stdout)?;
                     }
                     Ok((_, false)) => write_ok(&mut stdout)?,
@@ -214,8 +212,8 @@ fn handle_have_objects(
 
     // now send the actual objects
     for (obj_type, hash) in &to_send {
-        let object = read_transfer_object(repo, ObjectKind::parse(obj_type)?, hash)?;
-        let metadata = object
+        let (header, input) = open_transfer_object(repo, ObjectKind::parse(obj_type)?, hash)?;
+        let metadata = header
             .metadata
             .unwrap_or(crate::transport::local::BlobMetadata {
                 uid: 0,
@@ -225,15 +223,18 @@ fn handle_have_objects(
         writeln!(
             stdout,
             "object {} {} {} {} {} {}",
-            object.kind,
-            object.hash,
-            object.data.len(),
-            metadata.uid,
-            metadata.gid,
-            metadata.mode
+            header.kind, header.hash, header.size, metadata.uid, metadata.gid, metadata.mode
         )
         .map_err(io_err)?;
-        stdout.write_all(&object.data).map_err(io_err)?;
+        let copied = std::io::copy(&mut input.take(header.size), stdout).map_err(io_err)?;
+        if copied != header.size {
+            return Err(crate::Error::Transport {
+                message: format!(
+                    "object {} ended after {copied} of {} bytes",
+                    header.hash, header.size
+                ),
+            });
+        }
     }
     write_end(stdout)?;
 
@@ -271,7 +272,11 @@ fn handle_want_objects(
     write_end(stdout)
 }
 
-fn receive_object(args: &str, reader: &mut impl BufRead) -> Result<TransferObject> {
+fn receive_object(
+    repo: &Repo,
+    args: &str,
+    reader: &mut impl BufRead,
+) -> Result<(TransferObjectHeader, bool)> {
     let parts: Vec<&str> = args.split_whitespace().collect();
     if parts.len() != 6 {
         return Err(crate::Error::Transport {
@@ -281,27 +286,23 @@ fn receive_object(args: &str, reader: &mut impl BufRead) -> Result<TransferObjec
 
     let kind = ObjectKind::parse(parts[0])?;
     let hash = Hash::from_hex(parts[1])?;
-    let size = parse_number(parts[2], "size")? as usize;
+    let size = parse_number(parts[2], "size")?;
     let uid = parse_number(parts[3], "uid")? as u32;
     let gid = parse_number(parts[4], "gid")? as u32;
     let mode = parse_number(parts[5], "mode")? as u32;
 
-    let mut data = vec![0u8; size];
-    reader.read_exact(&mut data).map_err(|e| crate::Error::Io {
-        path: "stdin".into(),
-        source: e,
-    })?;
-
-    Ok(TransferObject {
+    let header = TransferObjectHeader {
         kind,
         hash,
-        data,
+        size,
         metadata: (kind == ObjectKind::Blob).then_some(crate::transport::local::BlobMetadata {
             uid,
             gid,
             mode,
         }),
-    })
+    };
+    let installed = install_transfer_reader(repo, &header, reader)?;
+    Ok((header, installed))
 }
 
 fn update_ref(repo: &Repo, args: &str) -> Result<()> {
@@ -412,7 +413,7 @@ mod tests {
 
     use super::*;
     use crate::ops::commit;
-    use crate::transport::local::list_all_objects;
+    use crate::transport::local::{list_all_objects, read_transfer_object, TransferObject};
     use crate::{MapEntry, NsConfig};
 
     #[test]

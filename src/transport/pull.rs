@@ -9,8 +9,7 @@ use crate::object::{read_commit, read_tree, verify_commit};
 use crate::refs::{read_ref, write_ref};
 use crate::repo::Repo;
 use crate::transport::local::{
-    copy_objects, install_transfer_object, list_all_objects, remove_objects, ObjectSet,
-    TransferStats,
+    copy_objects, list_all_objects, remove_objects, ObjectSet, TransferStats,
 };
 use crate::transport::ssh::SshConnection;
 use crate::types::EntryKind;
@@ -116,9 +115,9 @@ pub fn pull_ssh(
     let mut introduced = ObjectSet::new();
 
     let receive_result = (|| -> Result<()> {
-        while let Some(object) = conn.receive_object()? {
-            if install_transfer_object(local, &object)? {
-                stats.bytes_transferred += object.data.len() as u64;
+        while let Some(object) = conn.receive_object(local)? {
+            if object.installed {
+                stats.bytes_transferred += object.size;
                 stats.copied += 1;
                 introduced.push(object.kind, object.hash);
             } else {
