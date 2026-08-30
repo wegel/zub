@@ -1,12 +1,15 @@
 //! Rebuildable indexes over immutable trees.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::{IoResultExt, Result};
 use crate::metadata::ensure_elf;
 use crate::{list_refs, read_commit, read_ref, read_tree, EntryKind, Hash, Repo};
+
+const TREE_MARKER_SCHEMA: &str = "zub-tree-metadata-v1";
 
 /// Derive or repair every rebuildable index and ELF artifact for a commit.
 pub fn ensure_commit_metadata(repo: &Repo, commit: Hash) -> Result<()> {
@@ -14,7 +17,7 @@ pub fn ensure_commit_metadata(repo: &Repo, commit: Hash) -> Result<()> {
         return Ok(());
     }
     let tree = read_commit(repo, &commit)?.tree;
-    ensure_tree(repo, &repo.index_path(), tree)
+    ensure_tree(repo, &repo.index_path(), tree).map(|_| ())
 }
 
 /// Return sorted current refs whose current trees contain `blob`.
@@ -86,30 +89,78 @@ fn current_refs(repo: &Repo) -> Result<Vec<(String, Hash)>> {
         .collect()
 }
 
-fn ensure_tree(repo: &Repo, index: &Path, tree: Hash) -> Result<()> {
+fn ensure_tree(repo: &Repo, index: &Path, tree: Hash) -> Result<Vec<Hash>> {
     let marker = tree_marker(index, tree);
-    let indexed = marker.exists();
+    if let Some(blobs) = read_tree_marker(&marker)? {
+        for blob in &blobs {
+            ensure_elf(repo, *blob)?;
+        }
+        return Ok(blobs);
+    }
+    let mut elf_blobs = BTreeSet::new();
     for entry in read_tree(repo, &tree)?.entries() {
         match entry.kind {
             EntryKind::Regular { hash, .. } => {
-                if !indexed {
-                    write_marker(&blob_tree_marker(index, hash, tree))?;
+                write_marker(&blob_tree_marker(index, hash, tree))?;
+                if ensure_elf(repo, hash)? {
+                    elf_blobs.insert(hash);
                 }
-                ensure_elf(repo, hash)?;
             }
             EntryKind::Symlink { hash, .. } => {
-                if !indexed {
-                    write_marker(&blob_tree_marker(index, hash, tree))?;
-                }
+                write_marker(&blob_tree_marker(index, hash, tree))?;
             }
-            EntryKind::Directory { hash, .. } => ensure_tree(repo, index, hash)?,
+            EntryKind::Directory { hash, .. } => {
+                elf_blobs.extend(ensure_tree(repo, index, hash)?);
+            }
             _ => {}
         }
     }
-    if !indexed {
-        write_marker(&marker)?;
+    let elf_blobs = elf_blobs.into_iter().collect::<Vec<_>>();
+    write_tree_marker(&marker, &elf_blobs)?;
+    Ok(elf_blobs)
+}
+
+fn read_tree_marker(path: &Path) -> Result<Option<Vec<Hash>>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Ok(None),
+    };
+    let mut lines = text.lines();
+    if lines.next() != Some(TREE_MARKER_SCHEMA) {
+        return Ok(None);
     }
-    Ok(())
+    let mut blobs = Vec::new();
+    for line in lines {
+        let Ok(hash) = Hash::from_hex(line) else {
+            return Ok(None);
+        };
+        blobs.push(hash);
+    }
+    Ok(Some(blobs))
+}
+
+fn write_tree_marker(path: &Path, blobs: &[Hash]) -> Result<()> {
+    let parent = path.parent().expect("tree marker parent");
+    fs::create_dir_all(parent).with_path(parent)?;
+    let temporary = parent.join(format!(".tree-{}", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = File::create(&temporary).with_path(&temporary)?;
+        writeln!(file, "{TREE_MARKER_SCHEMA}").with_path(&temporary)?;
+        for blob in blobs {
+            writeln!(file, "{blob}").with_path(&temporary)?;
+        }
+        file.sync_all().with_path(&temporary)?;
+        fs::rename(&temporary, path).with_path(path)?;
+        File::open(parent)
+            .with_path(parent)?
+            .sync_all()
+            .with_path(parent)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn contains_tree(
@@ -201,4 +252,55 @@ fn count_markers(root: &Path) -> Result<usize> {
         count += usize::from(entry.file_type().is_file());
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{ensure_commit_metadata, read_tree_marker, tree_marker};
+    use crate::ops::commit;
+    use crate::{
+        artifact_ref_exists, delete_artifact_ref, read_commit, read_tree, tree_path, Repo,
+    };
+
+    #[test]
+    fn cached_tree_metadata_repairs_elf_without_rewalking_the_tree() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::copy(std::env::current_exe().unwrap(), source.join("probe")).unwrap();
+        fs::write(source.join("plain"), b"not an ELF").unwrap();
+        let repo = Repo::init(&temporary.path().join("repo")).unwrap();
+        let commit = commit(&repo, &source, "fixture", None, None).unwrap();
+        let tree = read_commit(&repo, &commit).unwrap().tree;
+        let entries = read_tree(&repo, &tree).unwrap();
+        let blob = *entries.get("probe").unwrap().kind.hash().unwrap();
+        let key = format!("elf/{blob}");
+        let marker = tree_marker(&repo.index_path(), tree);
+
+        assert_eq!(read_tree_marker(&marker).unwrap().unwrap(), vec![blob]);
+        delete_artifact_ref(&repo, &key).unwrap();
+        fs::write(tree_path(&repo, &tree), b"corrupt after verified marker").unwrap();
+
+        ensure_commit_metadata(&repo, commit).unwrap();
+        assert!(artifact_ref_exists(&repo, &key));
+    }
+
+    #[test]
+    fn replaces_a_legacy_empty_tree_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("plain"), b"not an ELF").unwrap();
+        let repo = Repo::init(&temporary.path().join("repo")).unwrap();
+        let commit = commit(&repo, &source, "fixture", None, None).unwrap();
+        let tree = read_commit(&repo, &commit).unwrap().tree;
+        let marker = tree_marker(&repo.index_path(), tree);
+        fs::write(&marker, b"").unwrap();
+
+        ensure_commit_metadata(&repo, commit).unwrap();
+
+        assert_eq!(read_tree_marker(&marker).unwrap(), Some(Vec::new()));
+    }
 }
