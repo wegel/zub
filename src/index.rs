@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::{IoResultExt, Result};
-use crate::metadata::ensure_elf;
+use crate::metadata::{ensure_elf, ensure_elf_set};
 use crate::{list_refs, read_commit, read_ref, read_tree, EntryKind, Hash, Repo};
 
 const TREE_MARKER_SCHEMA: &str = "zub-tree-metadata-v1";
@@ -28,10 +28,7 @@ pub fn ensure_commits_metadata(repo: &Repo, commits: &[Hash]) -> Result<()> {
     for tree in roots {
         elf_blobs.extend(collect_tree_elf(repo, &repo.index_path(), tree)?);
     }
-    for blob in elf_blobs {
-        ensure_elf(repo, blob)?;
-    }
-    Ok(())
+    ensure_elf_set(repo, elf_blobs)
 }
 
 /// Return sorted current refs whose current trees contain `blob`.
@@ -280,7 +277,8 @@ mod tests {
     use super::{ensure_commit_metadata, read_tree_marker, tree_marker};
     use crate::ops::commit;
     use crate::{
-        artifact_ref_exists, delete_artifact_ref, read_commit, read_tree, tree_path, Repo,
+        artifact_path, artifact_ref_exists, delete_artifact_ref, read_artifact_ref, read_commit,
+        read_named_artifact, read_tree, tree_path, Repo,
     };
 
     #[test]
@@ -304,6 +302,15 @@ mod tests {
 
         ensure_commit_metadata(&repo, commit).unwrap();
         assert!(artifact_ref_exists(&repo, &key));
+
+        let artifact = read_artifact_ref(&repo, &key).unwrap();
+        fs::write(artifact_path(&repo, &artifact), b"corrupt artifact").unwrap();
+        ensure_commit_metadata(&repo, commit).unwrap();
+        read_named_artifact(&repo, &key).unwrap();
+
+        fs::remove_file(repo.index_path().join("elf-artifacts-v1.cbor")).unwrap();
+        ensure_commit_metadata(&repo, commit).unwrap();
+        assert!(repo.index_path().join("elf-artifacts-v1.cbor").is_file());
     }
 
     #[test]
