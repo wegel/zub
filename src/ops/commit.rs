@@ -73,7 +73,7 @@ pub fn commit_with_metadata(
     // phase 2: commit the root tree with parallel file processing
     let started = Instant::now();
     let durability = ObjectDurability::Deferred;
-    let tree_hash = commit_tree_parallel(repo, source, "", &hardlink_targets, durability)?;
+    let tree_hash = commit_tree_parallel(repo, source, "", &hardlink_targets, durability)?.hash;
     trace("tree", started);
 
     let started = Instant::now();
@@ -170,6 +170,12 @@ fn trace(phase: &str, started: Instant) {
 struct ProcessedEntry {
     name: String,
     kind: EntryKind,
+    elf_blobs: Vec<Hash>,
+}
+
+struct CommittedTree {
+    hash: Hash,
+    elf_blobs: Vec<Hash>,
 }
 
 /// commit a directory tree with parallel file processing
@@ -179,7 +185,7 @@ fn commit_tree_parallel(
     prefix: &str,
     hardlink_targets: &HashMap<String, String>,
     durability: ObjectDurability,
-) -> Result<Hash> {
+) -> Result<CommittedTree> {
     let ns = &repo.config().namespace;
 
     // read directory entries
@@ -221,18 +227,22 @@ fn commit_tree_parallel(
                 .ok_or(crate::Error::UnmappedGid(meta.gid))?;
 
             let xattrs = read_xattrs(&path)?;
-            let subtree_hash =
+            let subtree =
                 commit_tree_parallel(repo, &path, &logical_path, hardlink_targets, durability)?;
 
             let kind = EntryKind::directory_with_xattrs(
-                subtree_hash,
+                subtree.hash,
                 inside_uid,
                 inside_gid,
                 meta.mode,
                 xattrs,
             );
 
-            Ok(ProcessedEntry { name, kind })
+            Ok(ProcessedEntry {
+                name,
+                kind,
+                elf_blobs: subtree.elf_blobs,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -245,6 +255,7 @@ fn commit_tree_parallel(
             let inside_gid = outside_to_inside(meta.gid, &ns.gid_map)
                 .ok_or(crate::Error::UnmappedGid(meta.gid))?;
 
+            let mut elf_blobs = Vec::new();
             let kind = match meta.file_type {
                 FileType::Regular => {
                     // check for hardlink
@@ -252,12 +263,14 @@ fn commit_tree_parallel(
                         return Ok(ProcessedEntry {
                             name: name.clone(),
                             kind: EntryKind::hardlink(target.clone()),
+                            elf_blobs,
                         });
                     }
 
                     // read file content and xattrs
                     let xattrs = read_xattrs(path)?;
                     let mut file = File::open(path).with_path(path)?;
+                    let elf = has_elf_magic(&mut file, path)?;
 
                     // check for sparse file
                     let sparse_regions = detect_sparse_regions(&file)?;
@@ -297,6 +310,10 @@ fn commit_tree_parallel(
                             (hash, None)
                         }
                     };
+
+                    if elf {
+                        elf_blobs.push(hash);
+                    }
 
                     match sparse_map {
                         Some(map) => EntryKind::sparse(hash, meta.size, map, xattrs),
@@ -374,6 +391,7 @@ fn commit_tree_parallel(
             Ok(ProcessedEntry {
                 name: name.clone(),
                 kind,
+                elf_blobs,
             })
         })
         .collect();
@@ -382,16 +400,34 @@ fn commit_tree_parallel(
     let file_entries: Vec<ProcessedEntry> = file_entries.into_iter().collect::<Result<Vec<_>>>()?;
 
     // combine and sort entries by name
+    let mut elf_blobs = Vec::new();
     let mut entries: Vec<TreeEntry> = dir_entries
         .into_iter()
         .chain(file_entries)
-        .map(|e| TreeEntry::new(e.name, e.kind))
+        .map(|entry| {
+            elf_blobs.extend(entry.elf_blobs);
+            TreeEntry::new(entry.name, entry.kind)
+        })
         .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     // create and write tree
     let tree = Tree::new(entries)?;
-    write_tree_with_durability(repo, &tree, durability)
+    let hash = write_tree_with_durability(repo, &tree, durability)?;
+    crate::index::record_tree_elf(repo, hash, &elf_blobs);
+    Ok(CommittedTree { hash, elf_blobs })
+}
+
+fn has_elf_magic(file: &mut File, path: &Path) -> Result<bool> {
+    let mut magic = [0_u8; 4];
+    match file.read_exact(&mut magic) {
+        Ok(()) => Ok(magic == *b"\x7fELF"),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(source) => Err(crate::Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 struct SparseReader<'a> {

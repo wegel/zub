@@ -178,6 +178,13 @@ fn write_tree_marker(path: &Path, blobs: &[Hash]) -> Result<()> {
     result
 }
 
+pub(crate) fn record_tree_elf(repo: &Repo, tree: Hash, blobs: &[Hash]) {
+    let mut blobs = blobs.to_vec();
+    blobs.sort_unstable();
+    blobs.dedup();
+    let _ = write_tree_marker(&tree_marker(&repo.index_path(), tree), &blobs);
+}
+
 fn tree_contains_blob(
     repo: &Repo,
     tree: Hash,
