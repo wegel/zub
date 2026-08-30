@@ -1,9 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+
+use rayon::prelude::*;
 
 use crate::error::{Error, IoResultExt, Result};
 use crate::hash::{BlobHasher, Hash, SYMLINK_MODE};
@@ -21,26 +23,80 @@ const VERIFY_BUFFER_BYTES: usize = 64 * 1024;
 /// parent objects. A remote may transfer one current snapshot without its
 /// complete ref history.
 pub fn verify_commit(repo: &Repo, commit_hash: &Hash) -> Result<()> {
-    let commit = read_commit(repo, commit_hash)?;
-    let mut trees = HashSet::new();
-    verify_tree(repo, &commit.tree, &mut trees)
+    verify_commits(repo, std::slice::from_ref(commit_hash), 1)
 }
 
-fn verify_tree(repo: &Repo, tree_hash: &Hash, checked: &mut HashSet<Hash>) -> Result<()> {
-    if !checked.insert(*tree_hash) {
+/// Verify several commits while reading each shared tree and blob once.
+pub fn verify_commits(repo: &Repo, commit_hashes: &[Hash], workers: usize) -> Result<()> {
+    let checks = collect_blob_checks(repo, commit_hashes)?;
+    if checks.is_empty() {
         return Ok(());
     }
+    let worker_count = workers.max(1).min(checks.len());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .stack_size(256 * 1024)
+        .build()
+        .map_err(|error| Error::VerifyPool(error.to_string()))?;
+    let results = pool.install(|| {
+        checks
+            .par_iter()
+            .map(|(hash, check)| verify_blob(repo, hash, &check.xattrs, check.symlink))
+            .collect::<Vec<_>>()
+    });
+    for result in results {
+        result?;
+    }
+    Ok(())
+}
 
-    let tree = read_tree(repo, tree_hash)?;
+#[derive(Clone)]
+struct BlobCheck {
+    xattrs: Vec<Xattr>,
+    symlink: bool,
+}
+
+fn collect_blob_checks(repo: &Repo, commit_hashes: &[Hash]) -> Result<Vec<(Hash, BlobCheck)>> {
+    let mut pending = Vec::new();
+    let mut commits = HashSet::new();
+    for hash in commit_hashes {
+        if commits.insert(*hash) {
+            pending.push(read_commit(repo, hash)?.tree);
+        }
+    }
+    let mut trees = HashSet::new();
+    let mut blobs = BTreeMap::new();
+    while let Some(tree_hash) = pending.pop() {
+        if !trees.insert(tree_hash) {
+            continue;
+        }
+        collect_tree(repo, tree_hash, &mut pending, &mut blobs)?;
+    }
+    Ok(blobs.into_iter().collect())
+}
+
+fn collect_tree(
+    repo: &Repo,
+    tree_hash: Hash,
+    pending: &mut Vec<Hash>,
+    blobs: &mut BTreeMap<Hash, BlobCheck>,
+) -> Result<()> {
+    let tree = read_tree(repo, &tree_hash)?;
     for entry in tree.entries() {
         match &entry.kind {
             EntryKind::Regular { hash, xattrs, .. } => {
-                verify_blob(repo, hash, xattrs, false)?;
+                blobs.entry(*hash).or_insert_with(|| BlobCheck {
+                    xattrs: xattrs.clone(),
+                    symlink: false,
+                });
             }
             EntryKind::Symlink { hash, xattrs } => {
-                verify_blob(repo, hash, xattrs, true)?;
+                blobs.entry(*hash).or_insert_with(|| BlobCheck {
+                    xattrs: xattrs.clone(),
+                    symlink: true,
+                });
             }
-            EntryKind::Directory { hash, .. } => verify_tree(repo, hash, checked)?,
+            EntryKind::Directory { hash, .. } => pending.push(*hash),
             EntryKind::BlockDevice { .. }
             | EntryKind::CharDevice { .. }
             | EntryKind::Fifo { .. }
@@ -205,5 +261,40 @@ mod tests {
             hash_file(&path, expected, 0, 0, SYMLINK_MODE, &[], true),
             Err(Error::CorruptObject(hash)) if hash == expected
         ));
+    }
+
+    #[test]
+    fn collects_shared_commit_objects_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = Repo::init(&temporary.path().join("repo")).unwrap();
+        let metadata = fs::metadata(temporary.path()).unwrap();
+        let namespace = &repo.config().namespace;
+        let uid = outside_to_inside(metadata.uid(), &namespace.uid_map).unwrap();
+        let gid = outside_to_inside(metadata.gid(), &namespace.gid_map).unwrap();
+        let blob = write_blob(&repo, b"shared", uid, gid, 0o100644, &[]).unwrap();
+        let tree = write_tree(
+            &repo,
+            &Tree::new(vec![TreeEntry::new(
+                "shared",
+                EntryKind::regular(blob, 6, vec![]),
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+        let first = write_commit(
+            &repo,
+            &Commit::with_timestamp(tree, vec![], "test", 0, "first"),
+        )
+        .unwrap();
+        let second = write_commit(
+            &repo,
+            &Commit::with_timestamp(tree, vec![], "test", 1, "second"),
+        )
+        .unwrap();
+
+        let checks = collect_blob_checks(&repo, &[first, second]).unwrap();
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].0, blob);
     }
 }

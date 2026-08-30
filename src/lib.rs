@@ -58,8 +58,8 @@ pub use namespace::{
 };
 pub use object::{
     artifact_exists, artifact_path, blob_exists, commit_path, read_artifact, read_blob,
-    read_commit, read_named_artifact, read_tree, tree_path, verify_commit, write_artifact,
-    write_blob, write_commit, write_named_artifact, write_tree,
+    read_commit, read_named_artifact, read_tree, tree_path, verify_commit, verify_commits,
+    write_artifact, write_blob, write_commit, write_named_artifact, write_tree,
 };
 pub use ops::{
     builder_key, du, du_tree, inspect_plan, stats, truncate_history, witness_ref, PathSize,

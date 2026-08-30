@@ -121,6 +121,9 @@ pub enum Error {
     #[error("cannot derive ELF metadata for blob {hash}: {message}")]
     ElfMetadata { hash: Hash, message: String },
 
+    #[error("cannot create verification worker pool: {0}")]
+    VerifyPool(String),
+
     #[error("plan not found: {0}")]
     PlanNotFound(Hash),
 
